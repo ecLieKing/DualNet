@@ -1,0 +1,23 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <SolidColorBrush x:Key="PageBrush" Color="#0F161A"/>
+    <SolidColorBrush x:Key="RailBrush" Color="#141E23"/>
+    <SolidColorBrush x:Key="CardBrush" Color="#1A262C"/>
+    <SolidColorBrush x:Key="CardAltBrush" Color="#202F36"/>
+    <SolidColorBrush x:Key="HoverBrush" Color="#24363E"/>
+    <SolidColorBrush x:Key="BorderBrush" Color="#2C3F47"/>
+    <SolidColorBrush x:Key="TextBrush" Color="#E4EDF0"/>
+    <SolidColorBrush x:Key="MutedBrush" Color="#8FA4AC"/>
+    <SolidColorBrush x:Key="PrimaryBrush" Color="#14A596"/>
+    <SolidColorBrush x:Key="PrimaryDarkBrush" Color="#1BBBAC"/>
+    <SolidColorBrush x:Key="PrimarySoftBrush" Color="#173B38"/>
+    <SolidColorBrush x:Key="OnPrimaryBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="DangerBrush" Color="#D96A5E"/>
+    <SolidColorBrush x:Key="DangerDarkBrush" Color="#E58A80"/>
+    <SolidColorBrush x:Key="DangerSoftBrush" Color="#3C2422"/>
+    <SolidColorBrush x:Key="WarningBannerBrush" Color="#3B3016"/>
+    <SolidColorBrush x:Key="WarningBannerBorderBrush" Color="#94731F"/>
+    <SolidColorBrush x:Key="WarningTextBrush" Color="#F2D06C"/>
+    <SolidColorBrush x:Key="InputBackgroundBrush" Color="#111C21"/>
+    <SolidColorBrush x:Key="InputBorderBrush" Color="#35494F"/>
+</ResourceDictionary>
