@@ -1,0 +1,11 @@
+bin/
+obj/
+.vs/
+TestResults/
+work/.dotnet/
+work/publish-stage/
+*.user
+*.suo
+outputs/
+work/*
+!work/UiSmoke/
