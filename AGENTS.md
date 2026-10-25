@@ -10,7 +10,7 @@ Do not assume that any earlier chat context exists or is authoritative — this 
 | Product | **DualNet** (双网通) — portable Windows network-adapter routing assistant |
 | Version | 1.3.1 |
 | Platform | Windows 10 / 11 x64, .NET 8 (WPF), requires administrator rights |
-| Repository | git, branch `main`, a single baseline commit; remote `https://github.com/ecLieKing/DualNet` |
+| Repository | git, branch `main`, normal incremental commits; remote `https://github.com/ecLieKing/DualNet` |
 | User manual | `README.md` (Chinese) |
 | License | MIT — see `LICENSE` |
 
@@ -35,10 +35,9 @@ The application:
 ## 2. Repository conventions
 
 - **Working directory is the repository root** (the folder containing `DualNet.sln`).
-- Branch is `main`. History is intentionally kept as **exactly one commit**: a single public
-  baseline. When preparing a public push, stage all work and **amend** that commit
-  (`git commit --amend`) instead of adding new ones, then expire the reflog and run
-  `git gc --prune=now` so no trace of superseded commits remains.
+- Branch is `main`. History grows through **normal incremental commits**: each logical
+  change is committed on top of the previous one with `git commit`. Do **not** amend or
+  rewrite commits that already exist; if a correction is needed, make a follow-up commit.
 - The repository-local commit identity is the owner's GitHub account (`ecLieKing`), so pushes
   attribute correctly on GitHub. The canonical remote is `https://github.com/ecLieKing/DualNet`.
   Keep hostnames, machine paths and third-party personal data out of tracked files, and check
