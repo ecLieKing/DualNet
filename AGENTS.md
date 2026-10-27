@@ -47,6 +47,9 @@ The application:
   editor rewrite them as ANSI/GBK or add a BOM.
 - `outputs/` and `work/.dotnet/`, `work/publish-stage/` are git-ignored build/delivery artifacts.
   `work/UiSmoke/` is deliberately **not** ignored and is part of the source tree.
+- **不要再生成压缩包 — never create, keep, upload or hand over compressed archives** (`.zip`, `.7z`,
+  `.rar`, `.tar`, `.tar.gz`). Do not pack deliverables, releases, source snapshots or intermediate
+  hand-offs; deliver plain files and directories. This rule overrides the ZIP step in §7.
 - A pre-migration working copy of this project may still exist outside the repository. Never
   develop, commit or publish from that copy. Remove it only after confirming nothing holds a
   lock on it.
