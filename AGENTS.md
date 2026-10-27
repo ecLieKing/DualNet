@@ -34,6 +34,11 @@ The application:
 
 ## 2. Repository conventions
 
+- **使用 Git 管理工程 — manage the project with Git.** Git history is the single source of truth for
+  every change: read `git status` / `git log` before and after a task, commit each meaningful change
+  as a normal incremental commit, and never leave finished work only in the working tree, an ad-hoc
+  copy or an archive. Undo a mistake with a follow-up commit or `git revert`; do not amend, reset or
+  rebase commits that already exist. Push only when the owner explicitly asks.
 - **Working directory is the repository root** (the folder containing `DualNet.sln`).
 - Branch is `main`. History grows through **normal incremental commits**: each logical
   change is committed on top of the previous one with `git commit`. Do **not** amend or
