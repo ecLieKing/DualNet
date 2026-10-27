@@ -19,6 +19,11 @@ internal static class Program
         var app = new App();
         app.InitializeComponent();
         app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        // UiSmoke 不调用 Application.Run()：第一次派发器泵才会触发 App.OnStartup，
+        // 它会按用户设置重置主题并弹出主窗口。这里提前触发一次、立刻关掉该窗口，
+        // 保证后续主题与截图完全由本程序控制（否则深色截图会被重置成浅色）。
+        app.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+        Application.Current.MainWindow?.Close();
         ThemeManager.Apply(dark: false, persist: false);
         var viewModel = CreateViewModel();
         var light = CreateSurface();
@@ -36,6 +41,10 @@ internal static class Program
         ThemeManager.Apply(dark: true, persist: false);
         var dark = CreateSurface();
         Render(app, dark.root, viewModel, 1040, 780, "ui-preview-all-dark.png");
+
+        viewModel.SelectedMode = viewModel.Modes.Single(mode => mode.Mode == RoutingMode.PartialTraffic);
+        VerifyComboBoxItemTextAndCapture(dark.root, "dark");
+        viewModel.SelectedMode = viewModel.Modes.Single(mode => mode.Mode == RoutingMode.AllTraffic);
 
         SetPrivate(viewModel, nameof(MainViewModel.IsConfirmationPending), true);
         SetPrivate(viewModel, nameof(MainViewModel.ConfirmationSeconds), 47);
@@ -58,6 +67,7 @@ internal static class Program
             .Invoke(viewModel, null);
         Render(app, light2.root, viewModel, 1040, 780, "ui-preview-empty.png");
 
+        VerifyComboBoxItemTextAndCapture(light2.root, "light");
         VerifyComboBoxToggle(light2.root);
 
         light2.window.Close();
@@ -94,8 +104,18 @@ internal static class Program
             Addresses = [new IpAddressInfo("10.64.10.203", 24, "Dhcp", "Dhcp", false)],
             DnsServers = ["10.64.10.178"], Routes = [new RouteInfo("0.0.0.0/0", "10.64.10.178", 0, "NetMgmt", false)]
         };
+        // 第三张网卡使用超长名称，用于验证下拉项在固定宽度下的省略号渲染（真实机器上的网卡名同样很长）。
+        var longNameAdapter = new AdapterInfo
+        {
+            Id = Guid.NewGuid(), InterfaceIndex = 61, Name = "WLAN 2", Status = "Down",
+            Description = "MediaTek Wi-Fi 6E MT7922 160MHz Wireless AC（Microsoft Wi-Fi Direct 虚拟适配器）",
+            PhysicalMediaType = "NdisPhysicalMediumNative802_11", IsPhysical = true, DhcpEnabled = true,
+            AutomaticMetric = true, InterfaceMetric = 55,
+            Addresses = [], DnsServers = [], Routes = []
+        };
         viewModel.Adapters.Add(targetAdapter);
         viewModel.Adapters.Add(internetAdapter);
+        viewModel.Adapters.Add(longNameAdapter);
         viewModel.SelectedTarget = targetAdapter;
         viewModel.UseInternetAdapter = true;
         viewModel.SelectedInternetAdapter = internetAdapter;
@@ -149,6 +169,66 @@ internal static class Program
         }
         finally
         {
+            host.Close();
+        }
+    }
+
+    private static void VerifyComboBoxItemTextAndCapture(FrameworkElement root, string label)
+    {
+        // 下拉项曾用 {TemplateBinding Content} 当文本，非字符串的 AdapterInfo 转换失败，整行只剩空白。
+        // 这里真实展开每个下拉框，断言每一项都由 ItemTemplate 渲染出 DisplayName，并留下证据图。
+        var host = new Window
+        {
+            Content = root, Width = 1040, Height = 780,
+            Left = -20000, Top = -20000, ShowActivated = false, ShowInTaskbar = false
+        };
+        host.Show();
+        host.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+        try
+        {
+            var combos = FindVisualChildren<ComboBox>(root).Where(combo => combo.IsVisible).ToList();
+            if (combos.Count == 0) throw new InvalidOperationException("未找到可见的 ComboBox。");
+            var rows = 0;
+            var index = 0;
+            foreach (var combo in combos)
+            {
+                index++;
+                combo.IsDropDownOpen = true;
+                host.Dispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ContextIdle);
+                try
+                {
+                    if (combo.Template.FindName("PART_Popup", combo) is not Popup popup || popup.Child is not FrameworkElement child)
+                        throw new InvalidOperationException("ComboBox 模板缺少 PART_Popup。");
+                    child.UpdateLayout();
+                    foreach (var item in FindVisualChildren<ComboBoxItem>(child))
+                    {
+                        if (item.DataContext is not AdapterInfo adapter) continue;
+                        var textBlock = FindVisualChildren<TextBlock>(item).FirstOrDefault();
+                        if (textBlock is null || !string.Equals(textBlock.Text, adapter.DisplayName, StringComparison.Ordinal))
+                            throw new InvalidOperationException(
+                                $"下拉项文本缺失：期望 '{adapter.DisplayName}'，实际 '{textBlock?.Text}'。");
+                        rows++;
+                    }
+                    var width = (int)Math.Ceiling(child.ActualWidth);
+                    var height = (int)Math.Ceiling(child.ActualHeight);
+                    if (width <= 0 || height <= 0) throw new InvalidOperationException("下拉框未完成布局，无法截图。");
+                    var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+                    bitmap.Render(child);
+                    var encoder = new PngBitmapEncoder();
+                    encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                    using var stream = File.Create(Path.Combine(Environment.CurrentDirectory, "work", $"ui-dropdown-{label}-{index}.png"));
+                    encoder.Save(stream);
+                }
+                finally
+                {
+                    combo.IsDropDownOpen = false;
+                }
+            }
+            Console.WriteLine($"COMBOBOX_ITEM_TEXT=OK ({combos.Count}x{rows / combos.Count})");
+        }
+        finally
+        {
+            host.Content = null;
             host.Close();
         }
     }

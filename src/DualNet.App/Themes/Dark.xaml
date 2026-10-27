@@ -22,6 +22,7 @@
     <SolidColorBrush x:Key="PrimaryBrush" Color="#B7C948"/>
     <SolidColorBrush x:Key="PrimaryDarkBrush" Color="#A6B93E"/>
     <SolidColorBrush x:Key="PrimarySoftBrush" Color="#4A512E"/>
+    <SolidColorBrush x:Key="ItemSelectedBrush" Color="#4A512E"/>
     <SolidColorBrush x:Key="OnPrimaryBrush" Color="#20221F"/>
     <SolidColorBrush x:Key="AccentBrush" Color="#E76F51"/>
     <SolidColorBrush x:Key="AccentDarkBrush" Color="#D55F43"/>

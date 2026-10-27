@@ -144,14 +144,19 @@ dotnet build .\src\DualNet.App\DualNet.App.csproj -c Release
 dotnet run --project .\work\UiSmoke\UiSmoke.csproj -c Release --no-restore
 ```
 
-Documented acceptance result for the v1.3.1 baseline:
+Documented acceptance result for the v1.3.1 baseline (plus the unreleased ComboBox text fix):
 
 - 50 test cases pass,
 - Release build completes with 0 warnings / 0 errors,
-- the UI smoke check prints `COMBOBOX_TOGGLE=OK (2)` and `UI_BINDING_INITIALIZATION=OK`.
+- the UI smoke check prints `COMBOBOX_TOGGLE=OK (3)`, `COMBOBOX_ITEM_TEXT=OK (2x3)` twice (dark and
+  light) and `UI_BINDING_INITIALIZATION=OK`,
+- the smoke also writes `work/ui-dropdown-dark-*.png` / `work/ui-dropdown-light-*.png`, which show an
+  open adapter drop-down with every row's text, the selected-row highlight and the long-name ellipsis.
 
 Preview images are written into the ignored `work/` directory. The smoke program never performs a
-real network apply or restore.
+real network apply or restore. Because it does not call `Application.Run()`, the first dispatcher pump
+triggers `App.OnStartup`; the smoke lets that happen up front and immediately closes the window it
+creates, so later screenshots keep the theme they asked for.
 
 Change requirements:
 
@@ -206,6 +211,13 @@ These were tried and deliberately removed. They are history, not a backlog:
 8. **A self-drawn ComboBox that could only be opened with Alt+Down** after the v1.3.0 redesign, plus
    a status column that was too narrow at 900 px and a stale count in the empty preview. Fixed in
    v1.3.1 (mouse drop-down, narrow layout, empty state).
+9. **Adapter drop-down rows that rendered as blank stripes.** The custom `ComboBoxItem` template
+   painted `{TemplateBinding Content}` as its text. Items come from `ItemsSource` as `AdapterInfo`
+   records, and that binding performs no object-to-string conversion, so every row was an empty
+   `TextBlock` inside a popup whose background matched the card behind it. Rows now render through
+   `ContentPresenter` plus the shared `AdapterItemTemplate`, the popover uses the input surface colour,
+   the selected row uses the dark `ItemSelectedBrush`, and long names are ellipsized with a tooltip.
+   New combo boxes must reuse `AdapterItemTemplate`; never paint `Content` directly as text.
 
 Preserve what these mistakes replaced: straightforward rule editing, clear status feedback,
 one-click restore, and the 60-second confirmation in the high-risk mode.
