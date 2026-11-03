@@ -14,6 +14,7 @@ public sealed record AdapterInfo
     public bool Ipv4BindingEnabled { get; init; } = true;
     public bool Ipv6BindingEnabled { get; init; } = true;
     public required bool DhcpEnabled { get; init; }
+    public bool DnsAutomatic { get; init; } = true;
     public required bool AutomaticMetric { get; init; }
     public required int InterfaceMetric { get; init; }
     public required IReadOnlyList<IpAddressInfo> Addresses { get; init; }

@@ -49,6 +49,7 @@ public sealed record RoutingProfile
     public Guid? IndustrialAdapterId { get; init; }
     public Guid? UplinkAdapterId { get; init; }
     public IReadOnlyList<RoutingRule> Rules { get; init; } = [];
+    public IReadOnlyList<RoutingRule> AppliedRules { get; init; } = [];
 }
 
 public sealed record AllTrafficSettings

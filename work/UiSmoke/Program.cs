@@ -48,6 +48,7 @@ internal static class Program
 
         SetPrivate(viewModel, nameof(MainViewModel.IsConfirmationPending), true);
         SetPrivate(viewModel, nameof(MainViewModel.ConfirmationSeconds), 47);
+        if (!viewModel.RestoreCommand.CanExecute(null)) throw new InvalidOperationException("严格模式确认期间无法执行网络重置。");
         Render(app, dark.root, viewModel, 1040, 780, "ui-preview-confirm-dark.png");
 
         dark.window.Close();
@@ -117,7 +118,6 @@ internal static class Program
         viewModel.Adapters.Add(internetAdapter);
         viewModel.Adapters.Add(longNameAdapter);
         viewModel.SelectedTarget = targetAdapter;
-        viewModel.UseInternetAdapter = true;
         viewModel.SelectedInternetAdapter = internetAdapter;
         RoutingRuleParser.TryParse(RoutingRuleKind.Host, "192.168.10.6", out var host, out _);
         RoutingRuleParser.TryParse(RoutingRuleKind.Subnet, "10.20.0.0/16", out var subnet, out _);
@@ -133,6 +133,10 @@ internal static class Program
             StatusDetail = string.Empty,
             StatusColor = "#7B8B91"
         });
+        viewModel.SelectedInternetAdapter = null;
+        if (viewModel.ApplyCommand.CanExecute(null)) throw new InvalidOperationException("缺少其余流量出口时仍可应用分流。");
+        viewModel.SelectedInternetAdapter = internetAdapter;
+        if (!viewModel.ApplyCommand.CanExecute(null)) throw new InvalidOperationException("选择出口后未能应用分流。");
         return viewModel;
     }
 

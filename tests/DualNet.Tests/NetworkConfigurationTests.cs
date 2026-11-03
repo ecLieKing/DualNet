@@ -115,6 +115,12 @@ public sealed class NetworkConfigurationTests
             var service = new NetworkConfigurationService(new SuccessRunner([target, noDefault]), new NetworkInventoryService(new SuccessRunner([target, noDefault])), new SnapshotStore(root), new FakeProbe());
             RoutingRuleParser.TryParse(RoutingRuleKind.Host, "192.168.10.6", out var rule, out _);
 
+            var missing = await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => service.ApplyAsync(new RouteConfiguration
+            {
+                TargetAdapterId = target.Id, Mode = RoutingMode.PartialTraffic, Rules = [rule!]
+            }, [target, noDefault]));
+            StringAssert.Contains(missing.Message, "必须选择其余流量出口");
+
             await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => service.ApplyAsync(new RouteConfiguration
             {
                 TargetAdapterId = target.Id, InternetAdapterId = target.Id,
@@ -147,13 +153,14 @@ public sealed class NetworkConfigurationTests
             var status = connected ? "Up" : "Disconnected";
             var target = CreateAdapter(name, 7, false, [new IpAddressInfo("192.168.10.88", 24, "Manual", "Manual", false)], id,
                 status: status, media: media, physical: physical);
+            var internet = CreateAdapter("出口", 40, true, [new IpAddressInfo("10.0.0.2", 24, "Dhcp", "Dhcp", false)]);
             var applied = target with { Routes = [new RouteInfo("192.168.10.6/32", "0.0.0.0", 1, "NetMgmt", false)] };
-            var runner = new SuccessRunner([applied], [target]);
+            var runner = new SuccessRunner([applied, internet], [target, internet]);
             var service = new NetworkConfigurationService(runner, new NetworkInventoryService(runner), new SnapshotStore(root), new FakeProbe());
             RoutingRuleParser.TryParse(RoutingRuleKind.Host, "192.168.10.6", out var rule, out _);
 
             var result = await service.ApplyAsync(
-                new RouteConfiguration { TargetAdapterId = id, Mode = RoutingMode.PartialTraffic, Rules = [rule!] }, [target]);
+                new RouteConfiguration { TargetAdapterId = id, InternetAdapterId = internet.Id, Mode = RoutingMode.PartialTraffic, Rules = [rule!] }, [target, internet]);
 
             Assert.AreEqual(id, result.Configuration.TargetAdapterId);
             StringAssert.Contains(runner.ApplyScript, "'192.168.10.6/32'");
@@ -162,20 +169,20 @@ public sealed class NetworkConfigurationTests
     }
 
     [TestMethod]
-    public async Task PartialTrafficWorksWithoutUplinkDefaultRouteOrLink()
+    public async Task PartialTrafficWorksWithDisconnectedTargetAndSeparateDefaultRoute()
     {
         var root = CreateTemporaryRoot();
         try
         {
             var targetId = Guid.NewGuid();
             var target = CreateAdapter("离线以太网", 2, false, [], targetId, status: "Disconnected");
-            var other = CreateAdapter("WLAN", 12, false, [new IpAddressInfo("10.0.0.5", 24, "Manual", "Manual", false)]);
+            var other = CreateAdapter("WLAN", 12, true, [new IpAddressInfo("10.0.0.5", 24, "Manual", "Manual", false)]);
             var applied = CreateAdapter("离线以太网", 2, false, [new IpAddressInfo("192.168.10.200", 24, "Manual", "Manual", false)], targetId,
                 [new RouteInfo("192.168.10.6/32", "0.0.0.0", 1, "NetMgmt", false)], status: "Disconnected");
             var runner = new SuccessRunner([applied, other], [target, other]);
             var service = new NetworkConfigurationService(runner, new NetworkInventoryService(runner), new SnapshotStore(root), new FakeProbe());
             RoutingRuleParser.TryParse(RoutingRuleKind.Host, "192.168.10.6", out var rule, out _);
-            var configuration = new RouteConfiguration { TargetAdapterId = targetId, Mode = RoutingMode.PartialTraffic, Rules = [rule!] };
+            var configuration = new RouteConfiguration { TargetAdapterId = targetId, InternetAdapterId = other.Id, Mode = RoutingMode.PartialTraffic, Rules = [rule!] };
 
             var result = await service.ApplyAsync(configuration, [target, other]);
 
@@ -186,7 +193,7 @@ public sealed class NetworkConfigurationTests
             var partialApply = runner.ApplyScript[runner.ApplyScript.LastIndexOf("$target=", StringComparison.Ordinal)..];
             Assert.IsFalse(partialApply.Contains("-Dhcp Enabled", StringComparison.Ordinal));
             StringAssert.Contains(runner.ApplyScript, "'192.168.10.6/32'");
-            Assert.IsFalse(runner.ApplyScript.Contains("0.0.0.0/0", StringComparison.Ordinal));
+            StringAssert.Contains(runner.ApplyScript, "$internet=12");
             Assert.IsFalse(runner.RestoreBeforeApply, "首次应用不应重置其他网卡");
             Assert.IsFalse(new SnapshotStore(root).HasPendingOperation);
         }
@@ -201,12 +208,13 @@ public sealed class NetworkConfigurationTests
         {
             var id = Guid.NewGuid();
             var current = CreateAdapter("目标", 3, false, [new IpAddressInfo("192.168.10.88", 24, "Dhcp", "Dhcp", false)], id);
+            var internet = CreateAdapter("出口", 40, true, [new IpAddressInfo("10.0.0.2", 24, "Dhcp", "Dhcp", false)]);
             var applied = current with { Routes = [new RouteInfo("192.168.10.6/32", "0.0.0.0", 1, "NetMgmt", false)] };
-            var runner = new SuccessRunner([applied], [current]);
+            var runner = new SuccessRunner([applied, internet], [current, internet]);
             var service = new NetworkConfigurationService(runner, new NetworkInventoryService(runner), new SnapshotStore(root), new FakeProbe());
             RoutingRuleParser.TryParse(RoutingRuleKind.Host, "192.168.10.6", out var rule, out _);
 
-            var result = await service.ApplyAsync(new RouteConfiguration { TargetAdapterId = id, Mode = RoutingMode.PartialTraffic, Rules = [rule!] }, [current]);
+            var result = await service.ApplyAsync(new RouteConfiguration { TargetAdapterId = id, InternetAdapterId = internet.Id, Mode = RoutingMode.PartialTraffic, Rules = [rule!] }, [current, internet]);
 
             Assert.AreEqual("192.168.10.88", result.Configuration.Rules.Single().LocalAddress);
             Assert.IsFalse(runner.ApplyScript.Contains("New-NetIPAddress", StringComparison.Ordinal));
@@ -222,6 +230,7 @@ public sealed class NetworkConfigurationTests
         {
             var id = Guid.NewGuid();
             var original = CreateAdapter("目标", 2, false, [], id);
+            var internet = CreateAdapter("出口", 40, true, [new IpAddressInfo("10.0.0.2", 24, "Dhcp", "Dhcp", false)]);
             var currentlyApplied = CreateAdapter("目标", 2, false, [new IpAddressInfo("192.168.10.200", 24, "Manual", "Manual", false)], id,
                 [new RouteInfo("192.168.10.6/32", "0.0.0.0", 1, "NetMgmt", false)]);
             var reapplied = currentlyApplied;
@@ -230,13 +239,13 @@ public sealed class NetworkConfigurationTests
             await store.SaveBaselineIfMissingAsync(new NetworkSnapshot
             {
                 Version = 3, MachineName = Environment.MachineName, CreatedAt = createdAt,
-                TargetAdapterId = id, Adapters = [AdapterSnapshot.From(original) with { DnsServers = [null!] }]
+                TargetAdapterId = id, Adapters = [AdapterSnapshot.From(original) with { DnsServers = [null!] }, AdapterSnapshot.From(internet)]
             });
-            var runner = new SuccessRunner([reapplied], [currentlyApplied]);
+            var runner = new SuccessRunner([reapplied, internet], [currentlyApplied, internet]);
             var service = new NetworkConfigurationService(runner, new NetworkInventoryService(runner), store, new FakeProbe());
             RoutingRuleParser.TryParse(RoutingRuleKind.Host, "192.168.10.6", out var rule, out _);
 
-            await service.ApplyAsync(new RouteConfiguration { TargetAdapterId = id, Mode = RoutingMode.PartialTraffic, Rules = [rule!] }, [currentlyApplied]);
+            await service.ApplyAsync(new RouteConfiguration { TargetAdapterId = id, InternetAdapterId = internet.Id, Mode = RoutingMode.PartialTraffic, Rules = [rule!] }, [currentlyApplied, internet]);
 
             Assert.IsTrue(runner.RestoreBeforeApply);
             Assert.AreEqual(createdAt, (await store.LoadBaselineAsync())!.CreatedAt);
@@ -301,7 +310,7 @@ public sealed class NetworkConfigurationTests
             var progress = new InlineProgress<string>();
 
             var result = await service.ApplyAsync(
-                new RouteConfiguration { TargetAdapterId = targetId, Mode = RoutingMode.PartialTraffic, Rules = [edited] },
+                new RouteConfiguration { TargetAdapterId = targetId, InternetAdapterId = usbId, Mode = RoutingMode.PartialTraffic, Rules = [edited] },
                 [currentlyApplied, virtualAdapter, usbCurrent], progress: progress);
 
             Assert.AreEqual("192.168.40.114", result.Configuration.Rules.Single().LocalAddress);
@@ -365,20 +374,21 @@ public sealed class NetworkConfigurationTests
         try
         {
             var target = CreateAdapter("目标", 2, false, []);
+            var internet = CreateAdapter("出口", 40, true, [new IpAddressInfo("10.0.0.2", 24, "Dhcp", "Dhcp", false)]);
             var store = new SnapshotStore(root);
             await store.SaveBaselineIfMissingAsync(new NetworkSnapshot
             {
                 Version = 2, MachineName = Environment.MachineName, CreatedAt = DateTimeOffset.Now,
-                IndustrialAdapterId = target.Id, UplinkAdapterId = Guid.NewGuid(), Adapters = [AdapterSnapshot.From(target)]
+                IndustrialAdapterId = target.Id, UplinkAdapterId = internet.Id, Adapters = [AdapterSnapshot.From(target), AdapterSnapshot.From(internet)]
             });
-            var runner = new SuccessRunner([target]);
+            var runner = new SuccessRunner([target, internet]);
             var service = new NetworkConfigurationService(runner, new NetworkInventoryService(runner), store, new FakeProbe());
             RoutingRuleParser.TryParse(RoutingRuleKind.Host, "192.168.10.6", out var rule, out _);
 
             var exception = await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => service.ApplyAsync(
-                new RouteConfiguration { TargetAdapterId = target.Id, Mode = RoutingMode.PartialTraffic, Rules = [rule!] }, [target]));
+                new RouteConfiguration { TargetAdapterId = target.Id, InternetAdapterId = internet.Id, Mode = RoutingMode.PartialTraffic, Rules = [rule!] }, [target, internet]));
 
-            StringAssert.Contains(exception.Message, "先点击“恢复原网络”");
+            StringAssert.Contains(exception.Message, "先点击“清除分流并启用 DHCP”");
         }
         finally { Directory.Delete(root, true); }
     }
@@ -425,18 +435,19 @@ public sealed class NetworkConfigurationTests
         try
         {
             var target = CreateAdapter("目标", 2, false, []);
-            var runner = new FailingApplyRunner([target]);
+            var internet = CreateAdapter("出口", 40, true, [new IpAddressInfo("10.0.0.2", 24, "Dhcp", "Dhcp", false)]);
+            var runner = new FailingApplyRunner([target, internet]);
             var store = new SnapshotStore(root);
             var service = new NetworkConfigurationService(runner, new NetworkInventoryService(runner), store, new FakeProbe());
             RoutingRuleParser.TryParse(RoutingRuleKind.Host, "192.168.10.6", out var rule, out _);
-            var configuration = new RouteConfiguration { TargetAdapterId = target.Id, Mode = RoutingMode.PartialTraffic, Rules = [rule!] };
+            var configuration = new RouteConfiguration { TargetAdapterId = target.Id, InternetAdapterId = internet.Id, Mode = RoutingMode.PartialTraffic, Rules = [rule!] };
 
-            await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => service.ApplyAsync(configuration, [target]));
+            await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => service.ApplyAsync(configuration, [target, internet]));
 
             Assert.IsTrue(runner.RestoreWasAttempted);
             var baseline = await store.LoadBaselineAsync();
             Assert.AreEqual(3, baseline!.Version);
-            Assert.AreEqual(1, baseline.Adapters.Count);
+            Assert.AreEqual(2, baseline.Adapters.Count);
             Assert.IsFalse(store.HasPendingOperation);
         }
         finally { Directory.Delete(root, true); }
@@ -458,6 +469,178 @@ public sealed class NetworkConfigurationTests
         var ipRestore = script.IndexOf("Set-NetIPInterface", StringComparison.Ordinal);
         var lastDisable = script.LastIndexOf("Disable-NetAdapterBinding", StringComparison.Ordinal);
         Assert.IsTrue(firstEnable >= 0 && firstEnable < ipRestore && lastDisable > ipRestore);
+    }
+
+    [TestMethod]
+    public void PartialResetScriptRemovesManagedRouteAndAddressesAndRestoresDnsAndMetrics()
+    {
+        var targetId = Guid.NewGuid();
+        var internetId = Guid.NewGuid();
+        var targetBaseline = CreateAdapter("目标", 15, true,
+            [new IpAddressInfo("192.168.10.10", 24, "Manual", "Manual", false), new IpAddressInfo("192.168.10.20", 24, "Dhcp", "Dhcp", false)], targetId) with
+        {
+            DhcpEnabled = true, DnsAutomatic = true, AutomaticMetric = true, InterfaceMetric = 25,
+            DnsServers = ["192.168.10.1"],
+            Routes = [new RouteInfo("0.0.0.0/0", "192.168.10.1", 100, "Dhcp", false), new RouteInfo("10.10.0.0/16", "192.168.10.1", 5, "NetMgmt", false)]
+        };
+        var targetCurrent = targetBaseline with
+        {
+            DhcpEnabled = false, AutomaticMetric = false, InterfaceMetric = 5000,
+            Addresses = targetBaseline.Addresses.Concat([new IpAddressInfo("192.168.10.200", 24, "Manual", "Manual", false)]).ToArray(),
+            Routes = [new RouteInfo("0.0.0.0/0", "192.168.10.1", 5000, "Dhcp", false), targetBaseline.Routes[1], new RouteInfo("192.168.10.6/32", "0.0.0.0", 1, "NetMgmt", false)]
+        };
+        var internetBaseline = CreateAdapter("出口", 50, true, [new IpAddressInfo("10.0.0.8", 24, "Manual", "Manual", false)], internetId) with
+        {
+            DhcpEnabled = false, DnsAutomatic = false, DnsServers = ["1.1.1.1"], AutomaticMetric = true
+        };
+        var internetCurrent = internetBaseline with
+        {
+            AutomaticMetric = false, InterfaceMetric = 1,
+            Routes = [new RouteInfo("0.0.0.0/0", "10.0.0.1", 1, "NetMgmt", false)]
+        };
+        var baseline = new NetworkSnapshot
+        {
+            Version = 3, MachineName = Environment.MachineName, CreatedAt = DateTimeOffset.Now,
+            Adapters = [AdapterSnapshot.From(targetBaseline), AdapterSnapshot.From(internetBaseline)]
+        };
+        RoutingRuleParser.TryParse(RoutingRuleKind.Host, "192.168.10.6", out var rule, out _);
+
+        var script = NetworkConfigurationService.BuildPartialResetScript(
+            [targetCurrent, internetCurrent], targetCurrent, internetCurrent, [rule!], baseline);
+
+        StringAssert.Contains(script, "-IPAddress '192.168.10.200'");
+        StringAssert.Contains(script, "-IPAddress '192.168.10.20'");
+        Assert.IsFalse(script.Contains("-IPAddress '192.168.10.10'", StringComparison.Ordinal));
+        StringAssert.Contains(script, "-DestinationPrefix '192.168.10.6/32'");
+        Assert.IsFalse(script.Contains("-DestinationPrefix '10.10.0.0/16'", StringComparison.Ordinal));
+        StringAssert.Contains(script, "-AutomaticMetric Enabled");
+        StringAssert.Contains(script, "-RouteMetric 100");
+        StringAssert.Contains(script, "-Dhcp Enabled");
+        StringAssert.Contains(script, "-ResetServerAddresses");
+        StringAssert.Contains(script, "-ServerAddresses @('1.1.1.1')");
+    }
+
+    [TestMethod]
+    public void RestoreScriptUsesDnsModeAndLegacyDhcpFallback()
+    {
+        var adapter = CreateAdapter("WLAN", 9, false, [new IpAddressInfo("10.0.0.9", 24, "Manual", "Manual", false)]) with
+        {
+            DhcpEnabled = true, DnsAutomatic = false, DnsServers = ["9.9.9.9"]
+        };
+        var currentFormat = new NetworkSnapshot
+        {
+            Version = 3, MachineName = Environment.MachineName, CreatedAt = DateTimeOffset.Now,
+            Adapters = [AdapterSnapshot.From(adapter)]
+        };
+        var legacy = currentFormat with { Adapters = [AdapterSnapshot.From(adapter) with { DnsAutomatic = null }] };
+
+        var currentScript = NetworkConfigurationService.BuildRestoreScript(currentFormat);
+        var legacyScript = NetworkConfigurationService.BuildRestoreScript(legacy);
+
+        StringAssert.Contains(currentScript, "-ServerAddresses @('9.9.9.9')");
+        Assert.IsFalse(currentScript.Contains("-ResetServerAddresses", StringComparison.Ordinal));
+        StringAssert.Contains(legacyScript, "-ResetServerAddresses");
+        StringAssert.Contains(currentScript, "-IPAddress '10.0.0.9'");
+    }
+
+    [TestMethod]
+    public async Task FailedPartialResetRollsBackAndKeepsOriginalBaseline()
+    {
+        var root = CreateTemporaryRoot();
+        try
+        {
+            var targetId = Guid.NewGuid();
+            var internetId = Guid.NewGuid();
+            var target = CreateAdapter("目标", 15, false,
+                [new IpAddressInfo("192.168.10.200", 24, "Manual", "Manual", false)], targetId,
+                [new RouteInfo("192.168.10.6/32", "0.0.0.0", 1, "NetMgmt", false)]) with { DhcpEnabled = false };
+            var internet = CreateAdapter("出口", 50, true, [new IpAddressInfo("10.0.0.8", 24, "Dhcp", "Dhcp", false)], internetId);
+            var store = new SnapshotStore(root);
+            var baseline = new NetworkSnapshot
+            {
+                Version = 3, MachineName = Environment.MachineName, CreatedAt = DateTimeOffset.Now,
+                Adapters = [AdapterSnapshot.From(target) with { Addresses = [], Routes = [] }, AdapterSnapshot.From(internet)]
+            };
+            await store.SaveBaselineIfMissingAsync(baseline);
+            var runner = new ResetRunner([target, internet], failOnce: true);
+            var service = new NetworkConfigurationService(runner, new NetworkInventoryService(runner), store, new FakeProbe());
+            RoutingRuleParser.TryParse(RoutingRuleKind.Host, "192.168.10.6", out var rule, out _);
+
+            await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => service.ResetRoutingAsync(
+                targetId, internetId, RoutingMode.PartialTraffic, [rule!]));
+
+            Assert.IsTrue(runner.ResetFailed);
+            Assert.IsTrue(runner.RollbackAttempted);
+            Assert.IsTrue(store.HasBaseline);
+            Assert.IsFalse(store.HasPendingOperation);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
+    public async Task SuccessfulPartialResetClearsBaselineAfterNetworkCleanup()
+    {
+        var root = CreateTemporaryRoot();
+        try
+        {
+            var targetId = Guid.NewGuid();
+            var internetId = Guid.NewGuid();
+            var target = CreateAdapter("目标", 15, false,
+                [new IpAddressInfo("192.168.10.200", 24, "Manual", "Manual", false)], targetId,
+                [new RouteInfo("192.168.10.6/32", "0.0.0.0", 1, "NetMgmt", false)]) with { DhcpEnabled = false };
+            var internet = CreateAdapter("出口", 50, true, [new IpAddressInfo("10.0.0.8", 24, "Dhcp", "Dhcp", false)], internetId);
+            var store = new SnapshotStore(root);
+            await store.SaveBaselineIfMissingAsync(new NetworkSnapshot
+            {
+                Version = 3, MachineName = Environment.MachineName, CreatedAt = DateTimeOffset.Now,
+                Adapters =
+                [
+                    AdapterSnapshot.From(target) with { Addresses = [], Routes = [] },
+                    AdapterSnapshot.From(internet),
+                    AdapterSnapshot.From(CreateAdapter("已断开的网卡", 77, false, []))
+                ]
+            });
+            var runner = new ResetRunner([target, internet]);
+            var service = new NetworkConfigurationService(runner, new NetworkInventoryService(runner), store, new FakeProbe());
+            RoutingRuleParser.TryParse(RoutingRuleKind.Host, "192.168.10.6", out var rule, out _);
+
+            await service.ResetRoutingAsync(targetId, internetId, RoutingMode.PartialTraffic, [rule!]);
+
+            Assert.IsFalse(store.HasBaseline);
+            StringAssert.Contains(runner.ResetScript!, "-Dhcp Enabled");
+            StringAssert.Contains(runner.ResetScript!, "-DestinationPrefix '192.168.10.6/32'");
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
+    public async Task StrictResetRestoresOtherAdapterBindingsAndUsesDhcpForTarget()
+    {
+        var root = CreateTemporaryRoot();
+        try
+        {
+            var targetId = Guid.NewGuid();
+            var otherId = Guid.NewGuid();
+            var target = CreateAdapter("WLAN", 12, true, [new IpAddressInfo("10.64.20.9", 22, "Dhcp", "Dhcp", false)], targetId);
+            var otherBaseline = CreateAdapter("VMware", 18, false, [new IpAddressInfo("192.168.20.1", 24, "Manual", "Manual", false)], otherId);
+            var otherCurrent = otherBaseline with { Ipv4BindingEnabled = false, Ipv6BindingEnabled = false, Addresses = [], Routes = [] };
+            var store = new SnapshotStore(root);
+            await store.SaveBaselineIfMissingAsync(new NetworkSnapshot
+            {
+                Version = 3, MachineName = Environment.MachineName, CreatedAt = DateTimeOffset.Now,
+                Adapters = [AdapterSnapshot.From(target), AdapterSnapshot.From(otherBaseline)]
+            });
+            var runner = new ResetRunner([target, otherCurrent]);
+            var service = new NetworkConfigurationService(runner, new NetworkInventoryService(runner), store, new FakeProbe());
+
+            await service.ResetRoutingAsync(targetId, null, RoutingMode.AllTraffic, []);
+
+            StringAssert.Contains(runner.ResetScript!, "Enable-NetAdapterBinding");
+            StringAssert.Contains(runner.ResetScript!, "-InterfaceIndex 18");
+            StringAssert.Contains(runner.ResetScript!, "-Dhcp Enabled");
+            Assert.IsFalse(store.HasBaseline);
+        }
+        finally { Directory.Delete(root, true); }
     }
 
     [TestMethod]
@@ -485,7 +668,7 @@ public sealed class NetworkConfigurationTests
     {
         Id = adapter.Id.ToString(), adapter.InterfaceIndex, adapter.Name, adapter.Description, adapter.Status, adapter.PhysicalMediaType,
         adapter.IsPhysical, adapter.Ipv4BindingEnabled, adapter.Ipv6BindingEnabled, adapter.DhcpEnabled, adapter.AutomaticMetric,
-        adapter.InterfaceMetric, adapter.Addresses, adapter.DnsServers, adapter.Routes
+        adapter.DnsAutomatic, adapter.InterfaceMetric, adapter.Addresses, adapter.DnsServers, adapter.Routes
     }));
 
     private sealed class FakeProbe(IEnumerable<string>? occupied = null) : IEthernetProbeService
@@ -534,6 +717,28 @@ public sealed class NetworkConfigurationTests
             if (script.Contains("ConvertTo-Json", StringComparison.Ordinal)) return Task.FromResult(ToInventoryJson(adapters));
             if (script.Contains("$target=", StringComparison.Ordinal)) throw new InvalidOperationException("simulated apply failure");
             if (script.Contains("Start-Sleep -Milliseconds 600", StringComparison.Ordinal)) RestoreWasAttempted = true;
+            return Task.FromResult(string.Empty);
+        }
+    }
+
+    private sealed class ResetRunner(IReadOnlyList<AdapterInfo> adapters, bool failOnce = false) : IPowerShellRunner
+    {
+        private bool _failed;
+        public bool ResetFailed { get; private set; }
+        public bool RollbackAttempted { get; private set; }
+        public string? ResetScript { get; private set; }
+
+        public Task<string> ExecuteAsync(string script, CancellationToken cancellationToken = default)
+        {
+            if (script.Contains("ConvertTo-Json", StringComparison.Ordinal)) return Task.FromResult(ToInventoryJson(adapters));
+            if (script.Contains("-Dhcp Enabled", StringComparison.Ordinal)) ResetScript = script;
+            if (script.Contains("Start-Sleep -Milliseconds 900", StringComparison.Ordinal) && failOnce && !_failed)
+            {
+                _failed = true;
+                ResetFailed = true;
+                throw new InvalidOperationException("simulated reset failure");
+            }
+            if (script.Contains("Start-Sleep -Milliseconds 600", StringComparison.Ordinal)) RollbackAttempted = true;
             return Task.FromResult(string.Empty);
         }
     }

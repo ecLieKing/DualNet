@@ -28,13 +28,15 @@ public sealed class NetworkInventoryService(IPowerShellRunner runner)
                 [pscustomobject]@{ DestinationPrefix=$_.DestinationPrefix; NextHop=$_.NextHop; RouteMetric=[int]$_.RouteMetric; Protocol=[string]$_.Protocol; Publish=([string]$_.Publish -eq 'Yes') }
               })
               $dns = @(($allDns | Where-Object { $_.InterfaceIndex -eq $idx } | Select-Object -First 1).ServerAddresses)
+              $dnsRegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($a.InterfaceGuid)"
+              $configuredDns = [string](Get-ItemProperty -LiteralPath $dnsRegistryPath -Name NameServer -ErrorAction SilentlyContinue).NameServer
               $v4binding = $allV4Bindings | Where-Object { $_.InterfaceDescription -eq $a.InterfaceDescription } | Select-Object -First 1
               $v6binding = $allV6Bindings | Where-Object { $_.InterfaceDescription -eq $a.InterfaceDescription } | Select-Object -First 1
               [pscustomobject]@{
                 Id=[string]$a.InterfaceGuid; InterfaceIndex=$idx; Name=[string]$a.Name; Description=[string]$a.InterfaceDescription
                 Status=[string]$a.Status; PhysicalMediaType=[string]$a.NdisPhysicalMedium; IsPhysical=[bool]$a.HardwareInterface
                 Ipv4BindingEnabled=($null -eq $v4binding -or [bool]$v4binding.Enabled); Ipv6BindingEnabled=($null -eq $v6binding -or [bool]$v6binding.Enabled)
-                DhcpEnabled=($ipif.Dhcp -eq 'Enabled'); AutomaticMetric=($ipif.AutomaticMetric -eq 'Enabled'); InterfaceMetric=[int]$ipif.InterfaceMetric
+                DhcpEnabled=($ipif.Dhcp -eq 'Enabled'); DnsAutomatic=[string]::IsNullOrWhiteSpace($configuredDns); AutomaticMetric=($ipif.AutomaticMetric -eq 'Enabled'); InterfaceMetric=[int]$ipif.InterfaceMetric
                 Addresses=$ips; DnsServers=$dns; Routes=$routes
               }
             })
@@ -60,6 +62,7 @@ public sealed class NetworkInventoryService(IPowerShellRunner runner)
         Ipv4BindingEnabled = raw.Ipv4BindingEnabled,
         Ipv6BindingEnabled = raw.Ipv6BindingEnabled,
         DhcpEnabled = raw.DhcpEnabled,
+        DnsAutomatic = raw.DnsAutomatic,
         AutomaticMetric = raw.AutomaticMetric,
         InterfaceMetric = raw.InterfaceMetric,
         Addresses = (raw.Addresses ?? []).Select(a => new IpAddressInfo(a.Address ?? string.Empty, a.PrefixLength, a.PrefixOrigin ?? string.Empty, a.SuffixOrigin ?? string.Empty, a.SkipAsSource)).ToArray(),
@@ -82,6 +85,7 @@ public sealed class NetworkInventoryService(IPowerShellRunner runner)
         public bool Ipv4BindingEnabled { get; init; } = true;
         public bool Ipv6BindingEnabled { get; init; } = true;
         public bool DhcpEnabled { get; init; }
+        public bool DnsAutomatic { get; init; } = true;
         public bool AutomaticMetric { get; init; }
         public int InterfaceMetric { get; init; }
         public RawIpAddress[]? Addresses { get; init; }

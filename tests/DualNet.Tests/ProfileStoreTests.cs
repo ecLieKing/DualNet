@@ -21,7 +21,7 @@ public sealed class ProfileStoreTests
             {
                 TargetAdapterId = target, InternetAdapterId = internet, Mode = RoutingMode.PartialTraffic,
                 AllTraffic = new AllTrafficSettings { LocalAddress = "10.0.0.9", PrefixLength = 24, Gateway = "10.0.0.1", DnsServers = ["223.5.5.5"] },
-                Rules = [rule!]
+                Rules = [rule!], AppliedRules = [rule!]
             });
             var loaded = await store.LoadAsync();
             Assert.AreEqual(target, loaded.TargetAdapterId);
@@ -29,6 +29,7 @@ public sealed class ProfileStoreTests
             Assert.AreEqual(RoutingMode.PartialTraffic, loaded.Mode);
             Assert.AreEqual("10.0.0.1", loaded.AllTraffic.Gateway);
             Assert.AreEqual("192.168.10.6/32", loaded.Rules.Single().DestinationPrefix);
+            Assert.AreEqual("192.168.10.6/32", loaded.AppliedRules.Single().DestinationPrefix);
             Assert.IsFalse(File.Exists(store.ProfilePath + ".tmp"));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }

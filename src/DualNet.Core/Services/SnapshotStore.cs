@@ -55,12 +55,12 @@ public sealed class SnapshotStore
 
     public void ClearAll()
     {
-        ClearPending();
-        if (File.Exists(BaselinePath)) File.Delete(BaselinePath);
         if (Directory.Exists(RootDirectory))
         {
             foreach (var path in Directory.EnumerateFiles(RootDirectory, "watchdog-*.*")) File.Delete(path);
         }
+        ClearPending();
+        if (File.Exists(BaselinePath)) File.Delete(BaselinePath);
     }
 
     public async Task ArmWatchdogAsync(Guid operationId, CancellationToken cancellationToken = default)

@@ -74,7 +74,7 @@
                         <TextBlock Grid.Column="1" Text="{Binding ConfirmationText}" Foreground="{DynamicResource WarningTextBrush}"
                                    FontSize="11.5" FontWeight="SemiBold" TextWrapping="Wrap" VerticalAlignment="Center" Margin="12,0"/>
                         <Button Grid.Column="2" Content="保留配置" Command="{Binding KeepConfigurationCommand}" Padding="13,7" VerticalAlignment="Center"/>
-                        <Button Grid.Column="4" Content="立即恢复" Command="{Binding RestoreCommand}" Style="{StaticResource DangerOutlineButton}"
+                        <Button Grid.Column="4" Content="清除分流并启用 DHCP" Command="{Binding RestoreCommand}" Style="{StaticResource DangerOutlineButton}"
                                 Padding="12,7" VerticalAlignment="Center"/>
                     </Grid>
                 </Border>
@@ -94,7 +94,7 @@
                                     <Grid Grid.Row="0">
                                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                         <StackPanel VerticalAlignment="Center">
-                                            <TextBlock Text="指定设备与出口" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource IslandTextBrush}"/>
+                                            <TextBlock Text="分流规则与网卡" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource IslandTextBrush}"/>
                                             <TextBlock Text="{Binding RuleInputHint}" FontSize="8.5" Foreground="{DynamicResource IslandMutedBrush}" Margin="0,5,0,0"/>
                                         </StackPanel>
                                         <Grid Grid.Column="1" Width="510" VerticalAlignment="Center">
@@ -156,7 +156,7 @@
                                                     CornerRadius="16" Padding="15">
                                                 <StackPanel VerticalAlignment="Center">
                                                     <StackPanel Orientation="Horizontal">
-                                                        <TextBlock Text="目标网卡" FontSize="9" Foreground="{DynamicResource IslandMutedBrush}"/>
+                                                        <TextBlock Text="分流网卡" FontSize="9" Foreground="{DynamicResource IslandMutedBrush}"/>
                                                         <Ellipse Width="6" Height="6" Fill="{Binding TargetStatusColor}" Margin="8,4,0,0"/>
                                                     </StackPanel>
                                                     <ComboBox ItemsSource="{Binding Adapters}" SelectedItem="{Binding SelectedTarget}" Height="40" Margin="0,11,0,0"
@@ -168,8 +168,8 @@
                                             <Border Grid.Row="2" Background="{DynamicResource ModuleBrush}" BorderBrush="{DynamicResource IslandBorderBrush}" BorderThickness="1"
                                                     CornerRadius="16" Padding="15">
                                                 <StackPanel VerticalAlignment="Center">
-                                                    <CheckBox Content="指定出口（可选）" IsChecked="{Binding UseInternetAdapter}" Margin="0,0,0,11"/>
-                                                    <ComboBox ItemsSource="{Binding Adapters}" SelectedItem="{Binding SelectedInternetAdapter}" IsEnabled="{Binding UseInternetAdapter}" Height="40"
+                                                    <TextBlock Text="其余流量出口" FontSize="9" Foreground="{DynamicResource IslandMutedBrush}" Margin="0,0,0,11"/>
+                                                    <ComboBox ItemsSource="{Binding Adapters}" SelectedItem="{Binding SelectedInternetAdapter}" Height="40"
                                                               ItemTemplate="{StaticResource AdapterItemTemplate}">
                                                     </ComboBox>
                                                     <TextBlock Text="{Binding InternetAdapterHint}" FontSize="8.5" Foreground="{DynamicResource IslandMutedBrush}" TextWrapping="Wrap" Margin="0,9,0,0"/>
@@ -231,7 +231,7 @@
                                             <StackPanel><TextBlock Text="自动保护" Style="{StaticResource IslandMicroLabel}"/><TextBlock Text="60 秒自动恢复" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource IslandTextBrush}" Margin="0,8,0,0"/><TextBlock Text="超时未确认时恢复基线网络。" FontSize="9" Foreground="{DynamicResource IslandMutedBrush}" Margin="0,4,0,0"/></StackPanel>
                                         </Border>
                                         <Border Grid.Column="4" Background="{DynamicResource ModuleBrush}" BorderBrush="{DynamicResource IslandBorderBrush}" BorderThickness="1" CornerRadius="16" Padding="15">
-                                            <StackPanel><TextBlock Text="恢复路径" Style="{StaticResource IslandMicroLabel}"/><TextBlock Text="随时恢复原网络" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource IslandTextBrush}" Margin="0,8,0,0"/><TextBlock Text="失败会尝试回滚，恢复入口始终可用。" FontSize="9" Foreground="{DynamicResource IslandMutedBrush}" Margin="0,4,0,0"/></StackPanel>
+                                            <StackPanel><TextBlock Text="网络重置" Style="{StaticResource IslandMicroLabel}"/><TextBlock Text="清除分流并启用 DHCP" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource IslandTextBrush}" Margin="0,8,0,0"/><TextBlock Text="失败会尝试回滚，严格模式仍保留基线恢复。" FontSize="9" Foreground="{DynamicResource IslandMutedBrush}" Margin="0,4,0,0"/></StackPanel>
                                         </Border>
                                     </Grid>
                                 </Grid>
@@ -262,7 +262,7 @@
                         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                             <Button Content="刷新网络" Command="{Binding RefreshCommand}" Style="{StaticResource SecondaryButton}" Height="40" Padding="15,7" Margin="0,0,9,0"/>
                             <Button Content="{Binding PrimaryActionText}" Command="{Binding ApplyCommand}" Height="40" Padding="22,7"/>
-                            <Button Content="恢复原网络" Command="{Binding RestoreCommand}" Style="{StaticResource DangerOutlineButton}" Height="40" Padding="16,7" Margin="10,0,0,0"/>
+                            <Button Content="清除分流并启用 DHCP" Command="{Binding RestoreCommand}" Style="{StaticResource DangerOutlineButton}" Height="40" Padding="16,7" Margin="10,0,0,0"/>
                         </StackPanel>
                     </Grid>
                 </Border>

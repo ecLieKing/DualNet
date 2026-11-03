@@ -8,7 +8,7 @@ Do not assume that any earlier chat context exists or is authoritative — this 
 | | |
 | --- | --- |
 | Product | **DualNet** (双网通) — portable Windows network-adapter routing assistant |
-| Version | 1.3.1 |
+| Version | 1.4.0 |
 | Platform | Windows 10 / 11 x64, .NET 8 (WPF), requires administrator rights |
 | Repository | git, branch `main`, normal incremental commits; remote `https://github.com/ecLieKing/DualNet` |
 | User manual | `README.md` (Chinese) |
@@ -26,7 +26,7 @@ while keeping internet access on a second adapter, and grew into a general-purpo
 The application:
 
 - saves a baseline of the machine's network configuration before its first change,
-- supports rollback on failure and one-click restoration at any time,
+- supports rollback on failure, a split-rule cleanup plus DHCP reset, and baseline restoration for strict-mode recovery,
 - runs a 60-second independent watchdog in the high-risk mode,
 - stores all state under `%LocalAppData%\DualNet` so the portable EXE needs no neighbouring files,
 - does **not** share the internet connection with devices, and does **not** require a
@@ -68,10 +68,10 @@ The application:
   (for example `192.168.10` or `192.168.10.0/24`).
 - If the target adapter already has a local address in the same subnet, it is **reused**. If not,
   the app automatically picks an unused address and adds it with a **`/24`** prefix.
-- Optionally designate a separate **internet adapter**: any other adapter that already has a
+- Require a separate **remaining-traffic egress adapter**: any other adapter that already has a
   Windows default route. It only becomes the *preferred egress for other IPv4 default traffic*.
   It must differ from the target adapter. This setting does **not** test or guarantee real
-  internet connectivity, and is never mandatory.
+  internet connectivity.
 - Device presence is determined by an **ARP response from the chosen source address**. Ping is a
   diagnostic only; addresses that merely answer Ping are not presented as real devices.
 
@@ -89,7 +89,7 @@ The application:
 These must hold after any change:
 
 1. The original baseline is written once and is **never overwritten** by subsequent applies.
-2. A failed apply attempts to roll back; the user can always click "restore original network".
+2. A failed apply attempts to roll back; the user can clear applied split rules and helper addresses, then enable DHCP on the selected adapters.
 3. The target adapter does not have to be wired, and connectivity is never asserted as a
    precondition.
 4. No drivers are installed, Internet Connection Sharing is never enabled, and industrial devices
@@ -176,7 +176,7 @@ Change requirements:
 ## 7. Release process
 
 ```powershell
-.\scripts\publish.ps1 -DotNetExe $dotnet -Version '1.3.1'
+.\scripts\publish.ps1 -DotNetExe $dotnet -Version '1.4.0'
 ```
 
 - The script publishes a Windows x64 **self-contained single-file** EXE, writes a SHA-256
@@ -228,7 +228,7 @@ These were tried and deliberately removed. They are history, not a backlog:
    New combo boxes must reuse `AdapterItemTemplate`; never paint `Content` directly as text.
 
 Preserve what these mistakes replaced: straightforward rule editing, clear status feedback,
-one-click restore, and the 60-second confirmation in the high-risk mode.
+one-click network reset, and the 60-second confirmation in the high-risk mode.
 
 ## 9. UI glossary (Chinese UI → English)
 
@@ -239,8 +239,8 @@ one-click restore, and the 60-second confirmation in the high-risk mode.
 | 部分流量 | Partial traffic |
 | 全部流量 / 全部流量（严格模式） | Full traffic / full traffic (strict mode) |
 | 高风险 | High risk |
-| 目标网卡 | Target adapter |
-| 指定上网网卡（可选） | Designate internet adapter (optional) |
+| 分流网卡 | Target adapter for split traffic |
+| 其余流量出口 | Required preferred egress for unmatched IPv4 traffic |
 | 刷新网络 | Refresh network |
 | 分流目标 | Routing targets |
 | 单个设备 IP / 整个网段 | Single device IP / whole subnet |
@@ -250,7 +250,7 @@ one-click restore, and the 60-second confirmation in the high-risk mode.
 | 应用部分流量 / 应用全部流量 | Apply partial traffic / apply full traffic |
 | 更新路由 | Update routes |
 | 保留此配置 | Keep this configuration |
-| 立即恢复 / 恢复原网络 | Restore now / restore original network |
+| 清除分流并启用 DHCP | Clear split routing and enable DHCP |
 | 本机 IPv4 / 前缀 / 路由器地址 | Local IPv4 / prefix / router address (gateway) |
 | 可选 DNS（多个地址用逗号分隔） | Optional DNS (comma-separated) |
 | 还没有分流目标 | No routing targets yet |

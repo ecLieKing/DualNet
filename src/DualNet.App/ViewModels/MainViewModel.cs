@@ -20,7 +20,6 @@ public sealed class MainViewModel : ObservableObject
     private readonly DispatcherTimer _confirmationTimer;
     private AdapterInfo? _selectedTarget;
     private AdapterInfo? _selectedInternetAdapter;
-    private bool _useInternetAdapter;
     private RoutingModeOption _selectedMode;
     private RuleKindOption _selectedRuleKind;
     private string _ruleInput = string.Empty;
@@ -29,7 +28,7 @@ public sealed class MainViewModel : ObservableObject
     private string _allGateway = string.Empty;
     private string _allDns = string.Empty;
     private string _statusText = "正在读取网络状态…";
-    private string _targetStatus = "请选择目标网卡";
+    private string _targetStatus = "请选择分流网卡";
     private string _targetStatusColor = "#7B8B91";
     private string _routeStatus = "尚未应用路由";
     private string _routeStatusColor = "#7B8B91";
@@ -41,6 +40,7 @@ public sealed class MainViewModel : ObservableObject
     private Guid? _confirmationOperationId;
     private Guid? _profileTargetId;
     private Guid? _profileInternetAdapterId;
+    private IReadOnlyList<RoutingRule> _appliedRules = [];
     private AllTrafficSettings? _initialAllTraffic;
     private bool _initializing = true;
 
@@ -51,7 +51,7 @@ public sealed class MainViewModel : ObservableObject
         _configuration = new NetworkConfigurationService(runner, _inventory, _snapshots, _probe);
         Modes =
         [
-            new RoutingModeOption(RoutingMode.PartialTraffic, "部分流量", "只有指定 IP 或网段走目标网卡"),
+            new RoutingModeOption(RoutingMode.PartialTraffic, "部分流量", "只有指定 IP 或网段走分流网卡"),
             new RoutingModeOption(RoutingMode.AllTraffic, "全部流量", "严格关闭其他网卡的 IPv4 和 IPv6")
         ];
         _selectedMode = Modes[0];
@@ -60,7 +60,7 @@ public sealed class MainViewModel : ObservableObject
         RefreshCommand = new AsyncCommand(RefreshAsync, () => !IsBusy && !IsConfirmationPending);
         AddRuleCommand = new AsyncCommand(AddRuleAsync, () => !IsBusy && IsPartialMode);
         ApplyCommand = new AsyncCommand(ApplyAsync, CanApply);
-        RestoreCommand = new AsyncCommand(() => RestoreAsync(), () => HasBaseline && !IsBusy);
+        RestoreCommand = new AsyncCommand(ResetNetworkAsync, CanResetNetwork);
         KeepConfigurationCommand = new AsyncCommand(KeepStrictConfigurationAsync, () => IsConfirmationPending && !IsBusy);
         RemoveRuleCommand = new RelayCommand<RoutingRuleViewModel>(RemoveRule, rule => rule is not null && !IsBusy && IsPartialMode);
         _confirmationTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -101,7 +101,7 @@ public sealed class MainViewModel : ObservableObject
     public bool IsPartialModeSelected { get => IsPartialMode; set { if (value) SelectedMode = Modes[0]; } }
     public bool IsAllModeSelected { get => IsAllMode; set { if (value) SelectedMode = Modes[1]; } }
     public bool HasRules => Rules.Count > 0;
-    public string VersionText { get; } = $"v{typeof(MainViewModel).Assembly.GetName().Version?.ToString(3) ?? "1.3.0"}";
+    public string VersionText { get; } = $"v{typeof(MainViewModel).Assembly.GetName().Version?.ToString(3) ?? "1.4.0"}";
 
     public AdapterInfo? SelectedTarget
     {
@@ -114,22 +114,9 @@ public sealed class MainViewModel : ObservableObject
             if (IsApplied && previous is not null && previous != value?.Id) IsDirty = true;
             if (SelectedInternetAdapter?.Id == value?.Id)
                 SelectedInternetAdapter = AdapterRecommendationService.RecommendInternetAdapter(Adapters, value?.Id);
+            OnPropertyChanged(nameof(InternetAdapterHint));
             UpdateTargetStatus();
             RaiseCommandStates();
-            if (!_initializing) _ = SaveProfileAsync();
-        }
-    }
-
-    public bool UseInternetAdapter
-    {
-        get => _useInternetAdapter;
-        set
-        {
-            if (!SetProperty(ref _useInternetAdapter, value)) return;
-            if (value && SelectedInternetAdapter is null)
-                SelectedInternetAdapter = AdapterRecommendationService.RecommendInternetAdapter(Adapters, SelectedTarget?.Id);
-            if (IsApplied) IsDirty = true;
-            OnPropertyChanged(nameof(InternetAdapterHint));
             if (!_initializing) _ = SaveProfileAsync();
         }
     }
@@ -143,17 +130,20 @@ public sealed class MainViewModel : ObservableObject
             if (!SetProperty(ref _selectedInternetAdapter, value)) return;
             if (IsApplied && previous is not null && previous != value?.Id) IsDirty = true;
             OnPropertyChanged(nameof(InternetAdapterHint));
+            RaiseCommandStates();
             if (!_initializing) _ = SaveProfileAsync();
         }
     }
 
-    public string InternetAdapterHint => !UseInternetAdapter
-        ? "不指定时，其他流量保持 Windows 当前选择。"
-        : SelectedInternetAdapter is null
-            ? "请选择一张具有默认路由的上网网卡。"
-            : SelectedInternetAdapter.IsUp
-                ? $"其他默认流量将优先走 {SelectedInternetAdapter.Name}；不检测是否真的联网。"
-                : $"{SelectedInternetAdapter.Name} 当前未连接，应用后可能无法访问网络。";
+    public string InternetAdapterHint => SelectedInternetAdapter is null
+        ? "请选择一张具有默认路由的网卡作为其余流量出口。"
+        : SelectedInternetAdapter.Id == SelectedTarget?.Id
+            ? "其余流量出口必须与分流网卡不同。"
+            : !SelectedInternetAdapter.HasDefaultRoute
+                ? "所选网卡没有默认路由，不能作为其余流量出口。"
+                : SelectedInternetAdapter.IsUp
+                    ? $"未匹配的默认流量将优先走 {SelectedInternetAdapter.Name}；不检测是否真的联网。"
+                    : $"{SelectedInternetAdapter.Name} 当前未连接，应用后其他默认流量可能不可用。";
 
     public RuleKindOption SelectedRuleKind
     {
@@ -194,7 +184,7 @@ public sealed class MainViewModel : ObservableObject
         var profile = await _profiles.LoadAsync();
         _profileTargetId = profile.TargetAdapterId ?? profile.IndustrialAdapterId;
         _profileInternetAdapterId = profile.InternetAdapterId;
-        _useInternetAdapter = profile.InternetAdapterId is not null;
+        _appliedRules = profile.AppliedRules.Count > 0 ? profile.AppliedRules : profile.Rules;
         _initialAllTraffic = string.IsNullOrWhiteSpace(profile.AllTraffic.LocalAddress)
                              && string.IsNullOrWhiteSpace(profile.AllTraffic.Gateway)
             ? null
@@ -207,12 +197,12 @@ public sealed class MainViewModel : ObservableObject
         if (_snapshots.HasPendingOperation)
         {
             var answer = MessageBox.Show("检测到未完成的网络配置。为保证安全，是否立即恢复原网络？", "双网通", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-            if (answer == MessageBoxResult.Yes) await RestoreAsync(skipConfirmation: true);
+            if (answer == MessageBoxResult.Yes) await RestoreBaselineAfterInterruptionAsync();
         }
         else if (IsApplied)
         {
             var baseline = await _snapshots.LoadBaselineAsync();
-            RouteStatus = baseline?.Version < 3 ? "检测到 v1.1 配置，请先恢复原网络" : "路由配置已生效";
+            RouteStatus = baseline?.Version < 3 ? "检测到旧版配置，请先清除分流并启用 DHCP" : "路由配置已生效";
             RouteStatusColor = baseline?.Version < 3 ? "#D49A18" : "#15956F";
             if (IsPartialMode) await VerifyPartialRulesAsync();
         }
@@ -231,10 +221,8 @@ public sealed class MainViewModel : ObservableObject
             Adapters.Clear();
             foreach (var adapter in adapters) Adapters.Add(adapter);
             SelectedTarget = Adapters.FirstOrDefault(adapter => adapter.Id == targetId) ?? AdapterRecommendationService.RecommendTarget(Adapters);
-            if (UseInternetAdapter)
-                SelectedInternetAdapter = Adapters.FirstOrDefault(adapter => adapter.Id == internetAdapterId && adapter.Id != SelectedTarget?.Id)
-                                          ?? AdapterRecommendationService.RecommendInternetAdapter(Adapters, SelectedTarget?.Id);
-            OnPropertyChanged(nameof(UseInternetAdapter));
+            SelectedInternetAdapter = Adapters.FirstOrDefault(adapter => adapter.Id == internetAdapterId && adapter.Id != SelectedTarget?.Id)
+                                      ?? AdapterRecommendationService.RecommendInternetAdapter(Adapters, SelectedTarget?.Id);
             OnPropertyChanged(nameof(InternetAdapterHint));
             if (_initialAllTraffic is not null)
             {
@@ -282,7 +270,7 @@ public sealed class MainViewModel : ObservableObject
         if (rule.Kind != RoutingRuleKind.Host || SelectedTarget is null) return;
         var target = IPAddress.Parse(rule.DestinationPrefix[..rule.DestinationPrefix.IndexOf('/')]);
         var mac = await _probe.ProbeMacAsync(target, SelectedTarget.ProbeSourceAddress ?? IPAddress.Any);
-        rule.StatusText = mac is null ? "暂未在目标网卡发现设备" : $"已在目标网卡发现 {target}";
+        rule.StatusText = mac is null ? "暂未在分流网卡发现设备" : $"已在分流网卡发现 {target}";
         rule.StatusDetail = mac is null ? "应用路由后会再次验证" : $"MAC {mac}";
         rule.StatusColor = mac is null ? "#D49A18" : "#15956F";
     }
@@ -303,22 +291,27 @@ public sealed class MainViewModel : ObservableObject
     {
         if (SelectedTarget is null)
         {
-            MessageBox.Show("请选择目标网卡。", "缺少网卡", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("请选择分流网卡。", "缺少网卡", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        if (!SelectedTarget.IsUp && MessageBox.Show("目标网卡当前未连接，应用后可能立即失联。是否继续？", "网卡未连接", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        if (IsPartialMode && UseInternetAdapter && SelectedInternetAdapter is null)
+        if (!SelectedTarget.IsUp && MessageBox.Show("所选网卡当前未连接，应用后可能立即失联。是否继续？", "网卡未连接", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (IsPartialMode && SelectedInternetAdapter is null)
         {
-            MessageBox.Show("请选择上网网卡，或关闭“指定上网卡”。", "缺少上网网卡", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("请选择一张具有默认路由的其余流量出口。", "缺少其余流量出口", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        if (IsPartialMode && UseInternetAdapter && SelectedInternetAdapter?.Id == SelectedTarget.Id)
+        if (IsPartialMode && SelectedInternetAdapter?.Id == SelectedTarget.Id)
         {
-            MessageBox.Show("目标网卡和上网网卡不能相同。", "网卡选择冲突", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show("分流网卡和其余流量出口不能相同。", "网卡选择冲突", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        if (IsPartialMode && UseInternetAdapter && SelectedInternetAdapter?.IsUp == false
-            && MessageBox.Show("所选上网网卡当前未连接，应用后其他默认流量可能不可用。是否继续？", "上网网卡未连接", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (IsPartialMode && SelectedInternetAdapter?.HasDefaultRoute == false)
+        {
+            MessageBox.Show("所选其余流量出口没有默认路由。", "出口不可用", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        if (IsPartialMode && SelectedInternetAdapter?.IsUp == false
+            && MessageBox.Show("所选其余流量出口当前未连接，应用后其他默认流量可能不可用。是否继续？", "出口网卡未连接", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         if (IsAllMode && MessageBox.Show("严格模式会临时关闭所有其他可见网卡的 IPv4 和 IPv6。应用后必须在 60 秒内确认保留，否则自动恢复。是否继续？", "严格模式确认", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
 
         var configuration = BuildConfiguration();
@@ -338,6 +331,7 @@ public sealed class MainViewModel : ObservableObject
             var result = await _configuration.ApplyAsync(configuration, Adapters.ToArray(), StartWatchdogAsync, progress);
             routeApplied = true;
             ApplyResolvedConfiguration(result.Configuration);
+            _appliedRules = result.Configuration.Rules.ToArray();
             IsApplied = true;
             IsDirty = false;
             await SaveProfileAsync();
@@ -355,12 +349,12 @@ public sealed class MainViewModel : ObservableObject
             {
                 RouteStatus = $"部分流量已通过 {SelectedTarget.Name} 路由";
                 if (result.Configuration.InternetAdapterId is not null)
-                    RouteStatus += $" · 上网 {SelectedInternetAdapter?.Name}";
+                    RouteStatus += $" · 其余流量出口 {SelectedInternetAdapter?.Name}";
                 RouteStatusColor = "#15956F";
                 StatusText = "路由已生效，正在后台确认设备状态…";
                 await VerifyPartialRulesAsync();
                 StatusText = freezesDhcp
-                    ? "路由已应用；目标网卡当前 DHCP 参数已冻结，恢复原网络可还原 DHCP。"
+                    ? "路由已应用；分流网卡当前 DHCP 参数已冻结，清除分流时会重新启用 DHCP。"
                     : "部分流量路由已应用；其他流量保持系统原状。";
             }
         }
@@ -369,8 +363,8 @@ public sealed class MainViewModel : ObservableObject
             try { await _snapshots.LogAsync($"界面应用流程失败：{exception}"); } catch { }
             if (routeApplied)
             {
-                StatusText = "路由已应用，但保存或状态验证失败；可刷新状态或恢复原网络。";
-                MessageBox.Show($"路由已经应用，但后续处理失败：\n{exception.Message}\n\n可点击“刷新网络”或“恢复原网络”。", "双网通", MessageBoxButton.OK, MessageBoxImage.Warning);
+                StatusText = "路由已应用，但保存或状态验证失败；可刷新状态或清除分流。";
+                MessageBox.Show($"路由已经应用，但后续处理失败：\n{exception.Message}\n\n可点击“刷新网络”或“清除分流并启用 DHCP”。", "双网通", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             else
             {
@@ -388,7 +382,7 @@ public sealed class MainViewModel : ObservableObject
         return new RouteConfiguration
         {
             TargetAdapterId = SelectedTarget!.Id,
-            InternetAdapterId = IsPartialMode && UseInternetAdapter ? SelectedInternetAdapter?.Id : null,
+            InternetAdapterId = IsPartialMode ? SelectedInternetAdapter?.Id : null,
             Mode = SelectedMode.Mode,
             AllTraffic = new AllTrafficSettings { LocalAddress = AllLocalAddress.Trim(), PrefixLength = prefix, Gateway = AllGateway.Trim(), DnsServers = dns },
             Rules = Rules.Select(rule => rule.ToModel()).ToArray()
@@ -411,7 +405,7 @@ public sealed class MainViewModel : ObservableObject
         {
             if (rule.Kind == RoutingRuleKind.Subnet)
             {
-                rule.StatusText = $"{rule.Target} 已通过目标网卡路由";
+                rule.StatusText = $"{rule.Target} 已通过分流网卡路由";
                 rule.StatusDetail = $"本机地址 {rule.LocalAddress}";
                 rule.StatusColor = "#15956F";
                 continue;
@@ -420,7 +414,7 @@ public sealed class MainViewModel : ObservableObject
             {
                 var target = IPAddress.Parse(rule.DestinationPrefix[..rule.DestinationPrefix.IndexOf('/')]);
                 var verification = await _probe.VerifyAsync(target, IPAddress.Parse(rule.LocalAddress));
-                rule.StatusText = verification.ArpReachable ? $"已通过目标网卡找到 {target}" : $"未在目标网卡找到 {target}";
+                rule.StatusText = verification.ArpReachable ? $"已通过分流网卡找到 {target}" : $"未在分流网卡找到 {target}";
                 rule.StatusDetail = verification.ArpReachable ? $"MAC {verification.MacAddress}" + (verification.PingReachable ? " · Ping 正常" : " · 不响应 Ping") : "请检查设备、线路和地址";
                 rule.StatusColor = verification.ArpReachable ? "#15956F" : "#C4564A";
             }
@@ -453,37 +447,59 @@ public sealed class MainViewModel : ObservableObject
             _confirmationOperationId = null;
             RouteStatus = $"全部 IP 流量仅允许使用 {SelectedTarget?.Name}";
             RouteStatusColor = "#15956F";
-            StatusText = "严格配置已保留；未检测目标网卡是否能够上网。";
+            StatusText = "严格配置已保留；未检测所选网卡是否能够上网。";
         }
         finally { IsBusy = false; OnPropertyChanged(nameof(HasBaseline)); }
     }
 
-    private async Task RestoreAsync(bool skipConfirmation = false)
+    private async Task ResetNetworkAsync()
     {
-        if (!HasBaseline) return;
-        if (!skipConfirmation && MessageBox.Show("恢复应用前所有网卡的地址、协议绑定、DNS 和路由？", "恢复原网络", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        if (SelectedTarget is null) return;
+        var scope = IsPartialMode && SelectedInternetAdapter is not null
+            ? $"“{SelectedTarget.Name}”和“{SelectedInternetAdapter.Name}”"
+            : $"“{SelectedTarget.Name}”";
+        if (MessageBox.Show($"清除分流规则和相关路由，将{scope}切换为 DHCP。分流前已有的静态 IPv4 地址及手动 DNS 会保留。是否继续？", "清除分流并启用 DHCP", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         IsBusy = true;
         try
         {
             _confirmationTimer.Stop();
-            await _configuration.RestoreBaselineAsync();
+            await _configuration.ResetRoutingAsync(SelectedTarget.Id,
+                IsPartialMode ? SelectedInternetAdapter?.Id : null, SelectedMode.Mode,
+                _appliedRules);
             IsConfirmationPending = false;
             _confirmationOperationId = null;
             IsApplied = false;
             IsDirty = false;
-            foreach (var rule in Rules)
-            {
-                rule.StatusText = "等待应用路由";
-                rule.StatusDetail = string.Empty;
-                rule.StatusColor = "#7B8B91";
-            }
-            RouteStatus = "已恢复应用前的网络配置";
+            foreach (var rule in Rules) rule.PropertyChanged -= OnRulePropertyChanged;
+            Rules.Clear();
+            _appliedRules = [];
+            OnPropertyChanged(nameof(HasRules));
+            UpdateCoverage();
+            await SaveProfileAsync();
+            RouteStatus = "分流规则已清除，所选网卡已切换为 DHCP";
             RouteStatusColor = "#15956F";
-            StatusText = "原网络已恢复，配置规则仍保留。";
+            StatusText = "已移除分流配置产生的路由和辅助地址。";
+            await RefreshAsync();
+        }
+        catch (Exception exception) { MessageBox.Show(exception.Message, "网络重置失败", MessageBoxButton.OK, MessageBoxImage.Error); }
+        finally { IsBusy = false; OnPropertyChanged(nameof(HasBaseline)); RaiseCommandStates(); }
+    }
+
+    private async Task RestoreBaselineAfterInterruptionAsync()
+    {
+        try
+        {
+            await _configuration.RestoreBaselineAsync();
+            _appliedRules = [];
+            IsConfirmationPending = false;
+            _confirmationOperationId = null;
+            IsApplied = false;
+            IsDirty = false;
+            RouteStatus = "已恢复原始网络基线";
+            RouteStatusColor = "#15956F";
             await RefreshAsync();
         }
         catch (Exception exception) { MessageBox.Show(exception.Message, "恢复失败", MessageBoxButton.OK, MessageBoxImage.Error); }
-        finally { IsBusy = false; OnPropertyChanged(nameof(HasBaseline)); RaiseCommandStates(); }
     }
 
     private async void OnConfirmationTick(object? sender, EventArgs e)
@@ -523,17 +539,17 @@ public sealed class MainViewModel : ObservableObject
     {
         if (SelectedTarget is null)
         {
-            TargetStatus = "请选择目标网卡";
+            TargetStatus = "请选择分流网卡";
             TargetStatusColor = "#7B8B91";
         }
         else if (SelectedTarget.IsUp)
         {
-            TargetStatus = $"目标网卡已连接 · {SelectedTarget.Name}";
+            TargetStatus = $"分流网卡已连接 · {SelectedTarget.Name}";
             TargetStatusColor = "#15956F";
         }
         else
         {
-            TargetStatus = $"目标网卡未连接 · 仍允许配置";
+            TargetStatus = "分流网卡未连接 · 仍允许配置";
             TargetStatusColor = "#D49A18";
         }
     }
@@ -549,8 +565,8 @@ public sealed class MainViewModel : ObservableObject
         else if (IsApplied)
         {
             RouteStatus = IsAllMode ? "全部流量路由已应用" : $"部分流量路由已应用 · {Rules.Count} 条";
-            if (IsPartialMode && UseInternetAdapter && SelectedInternetAdapter is not null)
-                RouteStatus += $" · 上网 {SelectedInternetAdapter.Name}";
+            if (IsPartialMode && SelectedInternetAdapter is not null)
+                RouteStatus += $" · 其余流量 {SelectedInternetAdapter.Name}";
             RouteStatusColor = "#15956F";
         }
         else
@@ -560,7 +576,10 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private bool CanApply() => !IsBusy && !IsConfirmationPending && SelectedTarget is not null && (IsAllMode || Rules.Count > 0);
+    private bool CanApply() => !IsBusy && !IsConfirmationPending && SelectedTarget is not null
+        && (IsAllMode || Rules.Count > 0 && SelectedInternetAdapter is not null
+            && SelectedInternetAdapter.Id != SelectedTarget.Id && SelectedInternetAdapter.HasDefaultRoute);
+    private bool CanResetNetwork() => !IsBusy && SelectedTarget is not null;
     private void UpdateCoverage()
     {
         var models = Rules.Select(item => item.ToModel()).ToArray();
@@ -575,9 +594,10 @@ public sealed class MainViewModel : ObservableObject
             Version = 3,
             Mode = SelectedMode.Mode,
             TargetAdapterId = SelectedTarget?.Id,
-            InternetAdapterId = IsPartialMode && UseInternetAdapter ? SelectedInternetAdapter?.Id : null,
+            InternetAdapterId = IsPartialMode ? SelectedInternetAdapter?.Id : null,
             AllTraffic = all,
-            Rules = Rules.Select(item => item.ToModel()).ToArray()
+            Rules = Rules.Select(item => item.ToModel()).ToArray(),
+            AppliedRules = _appliedRules
         });
     }
 

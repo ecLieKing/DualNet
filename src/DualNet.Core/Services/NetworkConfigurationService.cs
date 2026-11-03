@@ -63,7 +63,7 @@ public sealed class NetworkConfigurationService
                 }
             }
             var target = restoredAdapters.SingleOrDefault(adapter => adapter.Id == configuration.TargetAdapterId)
-                ?? throw new InvalidOperationException("恢复基线后找不到所选目标网卡。");
+                ?? throw new InvalidOperationException("恢复基线后找不到所选网卡。");
             var internetAdapter = ResolveInternetAdapter(configuration, restoredAdapters, target);
             progress?.Report(configuration.Mode == RoutingMode.PartialTraffic ? "正在检查本机地址…" : "正在检查默认路由参数…");
             var resolved = configuration.Mode == RoutingMode.PartialTraffic
@@ -80,7 +80,7 @@ public sealed class NetworkConfigurationService
             }
             else
             {
-                if (internetAdapter is not null) progress?.Report($"正在设置上网卡 {internetAdapter.Name}…");
+                if (internetAdapter is not null) progress?.Report($"正在设置其余流量出口 {internetAdapter.Name}…");
                 applyScript = BuildPartialApplyScript(target, resolved.Rules, internetAdapter, restoredAdapters);
             }
             if (restorePlan is not null) applyScript = BuildRestoreScript(restorePlan) + Environment.NewLine + applyScript;
@@ -120,13 +120,84 @@ public sealed class NetworkConfigurationService
         finally { restoreLock.Release(); }
     }
 
+    public async Task ResetRoutingAsync(Guid targetAdapterId, Guid? internetAdapterId, RoutingMode mode,
+        IReadOnlyList<RoutingRule> rules, CancellationToken cancellationToken = default)
+    {
+        using var restoreLock = new Semaphore(1, 1, "Global\\DualNet_Restore_Lock");
+        if (!restoreLock.WaitOne(TimeSpan.FromSeconds(30))) throw new InvalidOperationException("另一个网络重置操作正在执行，请稍后重试。");
+        try
+        {
+            var baseline = await _snapshots.LoadBaselineAsync(cancellationToken).ConfigureAwait(false);
+            var current = await _inventory.GetAdaptersAsync(cancellationToken).ConfigureAwait(false);
+            var target = current.SingleOrDefault(adapter => adapter.Id == targetAdapterId)
+                ?? throw new InvalidOperationException("找不到所选分流网卡，请刷新后重试。");
+            AdapterInfo? internet = null;
+            if (mode == RoutingMode.PartialTraffic)
+            {
+                if (internetAdapterId is Guid internetId)
+                {
+                    if (internetId != targetAdapterId)
+                        internet = current.SingleOrDefault(adapter => adapter.Id == internetId)
+                            ?? throw new InvalidOperationException("找不到所选其余流量出口，请刷新后重试。");
+                }
+            }
+
+            var beforeReset = new NetworkSnapshot
+            {
+                Version = 3, MachineName = Environment.MachineName, CreatedAt = DateTimeOffset.Now,
+                TargetAdapterId = targetAdapterId, Adapters = current.Select(AdapterSnapshot.From).ToArray()
+            };
+            try
+            {
+                string script;
+                var strictBindingsChanged = baseline?.Adapters.Any(original =>
+                {
+                    var active = current.SingleOrDefault(adapter => adapter.Id == original.Id);
+                    return active is not null
+                        && (original.Ipv4BindingEnabled && !active.Ipv4BindingEnabled
+                            || original.Ipv6BindingEnabled && !active.Ipv6BindingEnabled);
+                }) == true;
+                if ((mode == RoutingMode.AllTraffic || strictBindingsChanged) && baseline is not null)
+                {
+                    var remapped = RemapSnapshotToAvailableAdapters(baseline, current);
+                    script = BuildRestoreScript(remapped)
+                        + Environment.NewLine
+                        + BuildEnableDhcpScript(target, FindSnapshot(remapped, target.Id));
+                }
+                else
+                {
+                    var currentById = current.ToDictionary(adapter => adapter.Id);
+                    var remappedBaseline = baseline is null ? null : baseline with
+                    {
+                        Adapters = baseline.Adapters
+                            .Where(snapshot => currentById.ContainsKey(snapshot.Id))
+                            .Select(snapshot => snapshot with { InterfaceIndex = currentById[snapshot.Id].InterfaceIndex })
+                            .ToArray()
+                    };
+                    script = BuildPartialResetScript(current, target, internet, rules, remappedBaseline);
+                }
+                await _runner.ExecuteAsync(script, cancellationToken).ConfigureAwait(false);
+                await _snapshots.LogAsync("已清除路由配置并将所选网卡切换为 DHCP。").ConfigureAwait(false);
+                _snapshots.ClearAll();
+            }
+            catch (Exception exception)
+            {
+                await _snapshots.LogAsync($"网络重置失败，开始恢复操作前状态：{exception.Message}").ConfigureAwait(false);
+                try { await _runner.ExecuteAsync(BuildRestoreScript(beforeReset), CancellationToken.None).ConfigureAwait(false); }
+                catch (Exception rollbackException) { await _snapshots.LogAsync($"网络重置回滚失败：{rollbackException.Message}").ConfigureAwait(false); }
+                throw;
+            }
+        }
+        finally { restoreLock.Release(); }
+    }
+
     public Task ConfirmStrictConfigurationAsync(Guid operationId, CancellationToken cancellationToken = default) =>
         _snapshots.ConfirmWatchdogAsync(operationId, cancellationToken);
 
     private static AdapterInfo ValidateAndGetTarget(RouteConfiguration configuration, IReadOnlyList<AdapterInfo> adapters)
     {
         var target = adapters.SingleOrDefault(adapter => adapter.Id == configuration.TargetAdapterId)
-            ?? throw new InvalidOperationException("找不到所选目标网卡，请刷新后重试。");
+            ?? throw new InvalidOperationException("找不到所选分流网卡，请刷新后重试。");
         if (configuration.Mode == RoutingMode.PartialTraffic)
         {
             if (configuration.Rules.Count == 0) throw new InvalidOperationException("部分流量模式请至少添加一条目标规则。");
@@ -141,12 +212,14 @@ public sealed class NetworkConfigurationService
 
     private static AdapterInfo? ResolveInternetAdapter(RouteConfiguration configuration, IReadOnlyList<AdapterInfo> adapters, AdapterInfo target)
     {
-        if (configuration.Mode != RoutingMode.PartialTraffic || configuration.InternetAdapterId is not Guid internetId) return null;
-        if (internetId == target.Id) throw new InvalidOperationException("目标网卡和上网网卡不能选择同一张网卡。");
+        if (configuration.Mode != RoutingMode.PartialTraffic) return null;
+        if (configuration.InternetAdapterId is not Guid internetId)
+            throw new InvalidOperationException("部分流量模式必须选择其余流量出口。");
+        if (internetId == target.Id) throw new InvalidOperationException("分流网卡和其余流量出口不能选择同一张网卡。");
         var internetAdapter = adapters.SingleOrDefault(adapter => adapter.Id == internetId)
-            ?? throw new InvalidOperationException("找不到所选上网网卡，请刷新后重试。");
+            ?? throw new InvalidOperationException("找不到所选其余流量出口，请刷新后重试。");
         if (!internetAdapter.HasDefaultRoute)
-            throw new InvalidOperationException($"上网网卡“{internetAdapter.Name}”没有默认路由。请先让该网卡获得网关，或关闭“指定上网卡”。");
+            throw new InvalidOperationException($"其余流量出口“{internetAdapter.Name}”没有默认路由。请先让该网卡获得网关。");
         return internetAdapter;
     }
 
@@ -253,7 +326,7 @@ public sealed class NetworkConfigurationService
             if (!existing.MachineName.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("现有快照属于另一台电脑，请勿继续写入。");
             if (existing.Version < 3)
-                throw new InvalidOperationException("检测到 v1.1 正在生效的旧配置，请先点击“恢复原网络”，再应用 v1.2。");
+                throw new InvalidOperationException("检测到旧版配置，请先点击“清除分流并启用 DHCP”，再应用新配置。");
             return (existing, true);
         }
 
@@ -313,6 +386,18 @@ public sealed class NetworkConfigurationService
         return snapshot with { Adapters = remapped };
     }
 
+    private static NetworkSnapshot RemapSnapshotToAvailableAdapters(NetworkSnapshot snapshot, IReadOnlyList<AdapterInfo> current)
+    {
+        var currentById = current.ToDictionary(adapter => adapter.Id);
+        return snapshot with
+        {
+            Adapters = snapshot.Adapters
+                .Where(adapter => currentById.ContainsKey(adapter.Id))
+                .Select(adapter => adapter with { InterfaceIndex = currentById[adapter.Id].InterfaceIndex })
+                .ToArray()
+        };
+    }
+
     private static IReadOnlyList<AdapterInfo> ModelRestoredAdapters(IReadOnlyList<AdapterInfo> current, NetworkSnapshot baseline)
     {
         var snapshots = baseline.Adapters.ToDictionary(adapter => adapter.Id);
@@ -335,6 +420,7 @@ public sealed class NetworkConfigurationService
                 InterfaceMetric = snapshot.InterfaceMetric,
                 Ipv4BindingEnabled = snapshot.Ipv4BindingEnabled,
                 Ipv6BindingEnabled = snapshot.Ipv6BindingEnabled,
+                DnsAutomatic = snapshot.DnsAutomatic ?? snapshot.DhcpEnabled,
                 Addresses = snapshot.Addresses,
                 DnsServers = snapshot.DnsServers,
                 Routes = routes
@@ -347,6 +433,7 @@ public sealed class NetworkConfigurationService
         if (current.Ipv4BindingEnabled != baseline.Ipv4BindingEnabled
             || current.Ipv6BindingEnabled != baseline.Ipv6BindingEnabled
             || current.DhcpEnabled != baseline.DhcpEnabled
+            || current.DnsAutomatic != (baseline.DnsAutomatic ?? baseline.DhcpEnabled)
             || current.AutomaticMetric != baseline.AutomaticMetric
             || (!baseline.AutomaticMetric && current.InterfaceMetric != baseline.InterfaceMetric)) return true;
 
@@ -428,7 +515,7 @@ public sealed class NetworkConfigurationService
         {
             script.AppendLine($"$internet={internetAdapter.InterfaceIndex}");
             script.AppendLine("$internetDefaults=@(Get-NetRoute -InterfaceIndex $internet -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)");
-            script.AppendLine("if ($internetDefaults.Count -eq 0) { throw '指定的上网网卡没有默认路由。' }");
+            script.AppendLine("if ($internetDefaults.Count -eq 0) { throw '指定的其余流量出口没有默认路由。' }");
             script.AppendLine("Set-NetIPInterface -InterfaceIndex $internet -AddressFamily IPv4 -AutomaticMetric Disabled -InterfaceMetric 1 -ErrorAction Stop");
             script.AppendLine("$internetDefaults | Set-NetRoute -RouteMetric 1 -Confirm:$false -ErrorAction Stop");
             foreach (var other in (adapters ?? []).Where(adapter => adapter.Id != internetAdapter.Id && adapter.HasDefaultRoute))
@@ -438,7 +525,7 @@ public sealed class NetworkConfigurationService
             }
             script.AppendLine("$routeChoices=@(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | ForEach-Object { $ipif=Get-NetIPInterface -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1; [pscustomobject]@{ InterfaceIndex=[int]$_.InterfaceIndex; TotalMetric=([int]$_.RouteMetric + [int]$ipif.InterfaceMetric) } })");
             script.AppendLine("$winner=$routeChoices | Sort-Object TotalMetric,InterfaceIndex | Select-Object -First 1");
-            script.AppendLine("if ($null -eq $winner -or $winner.InterfaceIndex -ne $internet) { throw '上网卡默认路由优先级验证失败。' }");
+            script.AppendLine("if ($null -eq $winner -or $winner.InterfaceIndex -ne $internet) { throw '其余流量出口默认路由优先级验证失败。' }");
         }
         return script.ToString();
     }
@@ -487,11 +574,12 @@ public sealed class NetworkConfigurationService
             script.AppendLine($"Get-NetRoute -InterfaceIndex {index} -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {{ $_.Protocol -ne 'Local' }} | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue");
             script.AppendLine($"Get-NetIPAddress -InterfaceIndex {index} -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {{ $_.IPAddress -notlike '169.254.*' }} | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue");
             script.AppendLine($"Set-NetIPInterface -InterfaceIndex {index} -AddressFamily IPv4 -Dhcp {(adapter.DhcpEnabled ? "Enabled" : "Disabled")} -ErrorAction SilentlyContinue");
-            if (!adapter.DhcpEnabled)
-                foreach (var address in adapter.Addresses.Where(value => !value.Address.StartsWith("169.254.", StringComparison.Ordinal)))
-                    script.AppendLine($"New-NetIPAddress -InterfaceIndex {index} -AddressFamily IPv4 -IPAddress {PowerShellEscaping.Quote(address.Address)} -PrefixLength {address.PrefixLength} -Type Unicast -SkipAsSource:${address.SkipAsSource.ToString().ToLowerInvariant()} -ErrorAction SilentlyContinue | Out-Null");
+            foreach (var address in adapter.Addresses.Where(value => !value.Address.StartsWith("169.254.", StringComparison.Ordinal)
+                         && (!adapter.DhcpEnabled || !value.PrefixOrigin.Equals("Dhcp", StringComparison.OrdinalIgnoreCase))))
+                script.AppendLine($"New-NetIPAddress -InterfaceIndex {index} -AddressFamily IPv4 -IPAddress {PowerShellEscaping.Quote(address.Address)} -PrefixLength {address.PrefixLength} -Type Unicast -SkipAsSource:${address.SkipAsSource.ToString().ToLowerInvariant()} -ErrorAction SilentlyContinue | Out-Null");
             var dnsServers = (adapter.DnsServers ?? []).Where(value => !string.IsNullOrWhiteSpace(value)).ToArray();
-            if (dnsServers.Length == 0 || adapter.DhcpEnabled)
+            var dnsAutomatic = adapter.DnsAutomatic ?? adapter.DhcpEnabled;
+            if (dnsAutomatic || dnsServers.Length == 0)
                 script.AppendLine($"Set-DnsClientServerAddress -InterfaceIndex {index} -ResetServerAddresses -ErrorAction SilentlyContinue");
             else
                 script.AppendLine($"Set-DnsClientServerAddress -InterfaceIndex {index} -ServerAddresses @({string.Join(",", dnsServers.Select(PowerShellEscaping.Quote))}) -ErrorAction SilentlyContinue");
@@ -508,6 +596,71 @@ public sealed class NetworkConfigurationService
                 script.AppendLine("Disable-NetAdapterBinding -InterfaceDescription $description -ComponentID ms_tcpip -Confirm:$false -ErrorAction SilentlyContinue | Out-Null");
             if (!adapter.Ipv6BindingEnabled)
                 script.AppendLine("Disable-NetAdapterBinding -InterfaceDescription $description -ComponentID ms_tcpip6 -Confirm:$false -ErrorAction SilentlyContinue | Out-Null");
+        }
+        return script.ToString();
+    }
+
+    internal static string BuildPartialResetScript(IReadOnlyList<AdapterInfo> currentAdapters, AdapterInfo target,
+        AdapterInfo? internet, IReadOnlyList<RoutingRule> rules, NetworkSnapshot? baseline)
+    {
+        var script = new StringBuilder("$ErrorActionPreference='Stop'\n");
+        var snapshots = (baseline?.Adapters ?? []).ToDictionary(adapter => adapter.Id);
+        var routeMetricRestores = new List<string>();
+        foreach (var adapter in currentAdapters)
+        {
+            if (!snapshots.TryGetValue(adapter.Id, out var original)) continue;
+            if (adapter.AutomaticMetric != original.AutomaticMetric
+                || (!original.AutomaticMetric && adapter.InterfaceMetric != original.InterfaceMetric))
+                script.AppendLine(original.AutomaticMetric
+                    ? $"Set-NetIPInterface -InterfaceIndex {adapter.InterfaceIndex} -AddressFamily IPv4 -AutomaticMetric Enabled -ErrorAction Stop"
+                    : $"Set-NetIPInterface -InterfaceIndex {adapter.InterfaceIndex} -AddressFamily IPv4 -AutomaticMetric Disabled -InterfaceMetric {original.InterfaceMetric} -ErrorAction Stop");
+            foreach (var route in adapter.Routes.Where(route => route.DestinationPrefix == "0.0.0.0/0"))
+            {
+                var oldRoute = original.Routes.FirstOrDefault(old => old.DestinationPrefix == route.DestinationPrefix && old.NextHop == route.NextHop);
+                if (oldRoute is not null && oldRoute.RouteMetric != route.RouteMetric)
+                    routeMetricRestores.Add($"Get-NetRoute -InterfaceIndex {adapter.InterfaceIndex} -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -NextHop {PowerShellEscaping.Quote(route.NextHop)} -ErrorAction SilentlyContinue | Set-NetRoute -RouteMetric {oldRoute.RouteMetric} -Confirm:$false -ErrorAction Stop");
+            }
+        }
+
+        if (snapshots.TryGetValue(target.Id, out var targetBaseline))
+        {
+            var baselineAddresses = targetBaseline.Addresses.Select(address => address.Address).ToHashSet(StringComparer.Ordinal);
+            foreach (var local in rules.Select(rule => rule.LocalAddress).Distinct(StringComparer.Ordinal).Where(local => !baselineAddresses.Contains(local)))
+                script.AppendLine($"Get-NetIPAddress -InterfaceIndex {target.InterfaceIndex} -AddressFamily IPv4 -IPAddress {PowerShellEscaping.Quote(local)} -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction Stop");
+            foreach (var lease in targetBaseline.Addresses.Where(address => address.PrefixOrigin.Equals("Dhcp", StringComparison.OrdinalIgnoreCase)))
+                script.AppendLine($"Get-NetIPAddress -InterfaceIndex {target.InterfaceIndex} -AddressFamily IPv4 -IPAddress {PowerShellEscaping.Quote(lease.Address)} -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction Stop");
+        }
+
+        snapshots.TryGetValue(target.Id, out targetBaseline);
+        foreach (var rule in rules.Select(rule => rule.DestinationPrefix).Distinct(StringComparer.Ordinal))
+        {
+            var existed = targetBaseline?.Routes.Any(route => route.DestinationPrefix == rule && route.NextHop == "0.0.0.0") == true;
+            if (!existed)
+                script.AppendLine($"Get-NetRoute -InterfaceIndex {target.InterfaceIndex} -AddressFamily IPv4 -DestinationPrefix {PowerShellEscaping.Quote(rule)} -NextHop '0.0.0.0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction Stop");
+        }
+
+        script.AppendLine("Start-Sleep -Milliseconds 900");
+        script.Append(BuildEnableDhcpScript(target, snapshots.GetValueOrDefault(target.Id)));
+        if (internet is not null) script.Append(BuildEnableDhcpScript(internet, snapshots.GetValueOrDefault(internet.Id)));
+        script.AppendLine("Start-Sleep -Milliseconds 900");
+        foreach (var restore in routeMetricRestores) script.AppendLine(restore);
+        return script.ToString();
+    }
+
+    private static AdapterSnapshot? FindSnapshot(NetworkSnapshot snapshot, Guid adapterId) =>
+        snapshot.Adapters.SingleOrDefault(adapter => adapter.Id == adapterId);
+
+    private static string BuildEnableDhcpScript(AdapterInfo adapter, AdapterSnapshot? baseline)
+    {
+        var script = new StringBuilder();
+        script.AppendLine($"Set-NetIPInterface -InterfaceIndex {adapter.InterfaceIndex} -AddressFamily IPv4 -Dhcp Enabled -ErrorAction Stop");
+        var dnsAutomatic = baseline?.DnsAutomatic ?? baseline?.DhcpEnabled ?? adapter.DnsAutomatic;
+        var servers = (baseline?.DnsServers ?? adapter.DnsServers).Where(value => !string.IsNullOrWhiteSpace(value)).ToArray();
+        if (dnsAutomatic || servers.Length == 0)
+            script.AppendLine($"Set-DnsClientServerAddress -InterfaceIndex {adapter.InterfaceIndex} -ResetServerAddresses -ErrorAction Stop");
+        else
+        {
+            script.AppendLine($"Set-DnsClientServerAddress -InterfaceIndex {adapter.InterfaceIndex} -ServerAddresses @({string.Join(",", servers.Select(PowerShellEscaping.Quote))}) -ErrorAction Stop");
         }
         return script.ToString();
     }

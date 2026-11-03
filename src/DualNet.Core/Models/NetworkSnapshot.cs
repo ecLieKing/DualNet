@@ -18,6 +18,7 @@ public sealed record AdapterSnapshot
     public required int InterfaceIndex { get; init; }
     public required string Name { get; init; }
     public required bool DhcpEnabled { get; init; }
+    public bool? DnsAutomatic { get; init; }
     public required bool AutomaticMetric { get; init; }
     public required int InterfaceMetric { get; init; }
     public bool Ipv4BindingEnabled { get; init; } = true;
@@ -32,6 +33,7 @@ public sealed record AdapterSnapshot
         InterfaceIndex = adapter.InterfaceIndex,
         Name = adapter.Name,
         DhcpEnabled = adapter.DhcpEnabled,
+        DnsAutomatic = adapter.DnsAutomatic,
         AutomaticMetric = adapter.AutomaticMetric,
         InterfaceMetric = adapter.InterfaceMetric,
         Ipv4BindingEnabled = adapter.Ipv4BindingEnabled,
